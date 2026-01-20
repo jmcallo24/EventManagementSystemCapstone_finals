@@ -1,0 +1,1990 @@
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { 
+  Calendar, 
+  Users, 
+  Clock, 
+  CheckCircle, 
+  Plus, 
+  TrendingUp, 
+  AlertCircle,
+  Activity,
+  CalendarDays,
+  MapPin,
+  Bell,
+  FileText,
+  Award,
+  Star,
+  Heart,
+  Share2,
+  Download,
+  LogOut,
+  User,
+  Settings,
+  Filter,
+  Search,
+  Send
+} from "lucide-react";
+import logo from "@/assets/image.png";
+import { supabase } from "@/lib/supabaseClient";
+import { useToast } from "@/hooks/use-toast";
+
+interface Event {
+  id: string;
+  title: string;
+  date: string;
+  time: string;
+  venue: string;
+  organizer_name: string;
+  current_participants: number;
+  max_participants: number;
+  status: "pending" | "approved" | "rejected" | "completed";
+  event_type: string;
+  description: string;
+  isRegistered: boolean;
+  isFavorite: boolean;
+  isMyEvent: boolean; // NEW - indicates if this is user's approved request
+}
+
+interface Notification {
+  id: string;
+  title: string;
+  message: string;
+  created_at: string;
+  type: "event_approved" | "event_rejected" | "event_reminder" | "registration_confirmed" | "announcement";
+  is_read: boolean;
+  related_event_id?: string;
+}
+
+interface Report {
+  id: string;
+  title: string;
+  description: string;
+  report_type: "rejection_complaint" | "technical_issue" | "general_inquiry" | "event_feedback";
+  status: "open" | "in_progress" | "resolved" | "closed";
+  admin_response?: string;
+  created_at: string;
+  related_event_id?: string;
+  event_title?: string;
+}
+
+interface ReportMessage {
+  id: string;
+  message: string;
+  sender_id: string;
+  sender_name: string;
+  sender_role: string;
+  created_at: string;
+}
+
+interface EventRequest {
+  id: string;
+  title: string;
+  description: string;
+  date: string;
+  time: string;
+  venue: string;
+  event_type: string;
+  expected_participants: number;
+  requirements?: string;
+  budget_estimate?: number;
+  request_reason: string;
+  status: "pending" | "approved" | "rejected" | "under_review";
+  admin_comments?: string;
+  created_at: string;
+}
+
+const ParticipantDashboard = () => {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const [user, setUser] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState("calendar");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterType, setFilterType] = useState("all");
+  const [loading, setLoading] = useState(false);
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  const [reportMessages, setReportMessages] = useState<ReportMessage[]>([]);
+  const [newMessage, setNewMessage] = useState("");
+  const [newReportTitle, setNewReportTitle] = useState("");
+  const [newReportDescription, setNewReportDescription] = useState("");
+  const [newReportType, setNewReportType] = useState<"rejection_complaint" | "technical_issue" | "general_inquiry" | "event_feedback">("rejection_complaint");
+  const [showNewReportForm, setShowNewReportForm] = useState(false);
+  
+  // Event details modal
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [showEventDetails, setShowEventDetails] = useState(false);
+  
+  // Event Request states
+  const [eventRequests, setEventRequests] = useState<EventRequest[]>([]);
+  const [showNewRequestForm, setShowNewRequestForm] = useState(false);
+  const [newEventRequest, setNewEventRequest] = useState({
+    title: "",
+    description: "",
+    date: "",
+    time: "",
+    venue: "",
+    event_type: "Academic",
+    custom_event_type: "", // NEW: For custom event type when "Others" is selected
+    expected_participants: 50,
+    requirements: "",
+    budget_estimate: 0,
+    request_reason: ""
+  });
+
+  // Real data from Supabase
+  const [events, setEvents] = useState<Event[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [reports, setReports] = useState<Report[]>([]);
+
+  // Load data from Supabase
+  const loadEvents = async () => {
+    try {
+      setLoading(true);
+      
+      // Get ALL approved events (from organizers AND from approved participant requests)
+      const [{ data: organizerEvents }, { data: approvedRequests }] = await Promise.all([
+        // Original organizer events
+        supabase
+          .from('events')
+          .select(`
+            *,
+            organizer:organizer_id (name)
+          `)
+          .eq('status', 'approved')
+          .order('date', { ascending: true }),
+        
+        // Approved participant requests that became events  
+        supabase
+          .from('event_requests')
+          .select(`
+            *,
+            requester:requester_id (name)
+          `)
+          .eq('status', 'approved')
+          .order('date', { ascending: true })
+      ]);
+
+      if (!user?.id) {
+        setEvents([]);
+        return;
+      }
+
+      // Get user's registrations and favorites
+      let registrations = [];
+      let favorites = [];
+      
+      try {
+        const { data: regData } = await supabase
+          .from('event_registrations')
+          .select('event_id')
+          .eq('participant_id', user.id);
+        registrations = regData || [];
+      } catch (error) {
+        console.log('Event registrations table not found, creating empty array...');
+        registrations = [];
+      }
+      
+      try {
+        const { data: favData } = await supabase
+          .from('event_favorites')
+          .select('event_id')
+          .eq('user_id', user.id);
+        favorites = favData || [];
+      } catch (error) {
+        console.log('Event favorites table not found, creating empty array...');
+        favorites = [];
+      }
+
+      const registrationIds = registrations?.map(r => r.event_id) || [];
+      const favoriteIds = favorites?.map(f => f.event_id) || [];
+
+      // Format organizer events
+      const formattedOrganizerEvents: Event[] = (organizerEvents || []).map(event => ({
+        id: event.id,
+        title: event.title,
+        date: event.date,
+        time: event.time,
+        venue: event.venue,
+        organizer_name: event.organizer?.name || 'Unknown',
+        current_participants: event.current_participants || 0,
+        max_participants: event.max_participants || 100,
+        status: event.status,
+        event_type: event.event_type,
+        description: event.description || '',
+        isRegistered: registrationIds.includes(event.id),
+        isFavorite: favoriteIds.includes(event.id),
+        isMyEvent: false // These are organizer events
+      }));
+
+      // Format approved participant request events
+      const formattedRequestEvents: Event[] = (approvedRequests || []).map(request => ({
+        id: request.id, // Using request ID as event ID
+        title: request.title,
+        date: request.date,
+        time: request.time,
+        venue: request.venue,
+        organizer_name: request.requester?.name || 'Unknown',
+        current_participants: 0, // Start with 0 for new events
+        max_participants: request.expected_participants || 50,
+        status: 'approved',
+        event_type: request.event_type,
+        description: request.description || '',
+        isRegistered: request.requester_id === user.id, // Auto-registered if they created it
+        isFavorite: favoriteIds.includes(request.id),
+        isMyEvent: request.requester_id === user.id // This is their approved event
+      }));
+
+      // Combine both types
+      const allEvents = [...formattedOrganizerEvents, ...formattedRequestEvents];
+      setEvents(allEvents);
+      
+    } catch (error) {
+      console.error('Error loading events:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load events",
+        variant: "destructive"
+      });
+      setEvents([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadNotifications = async () => {
+    if (!user?.id) return;
+    
+    try {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error loading notifications:', error);
+        return;
+      }
+      
+      console.log('Loaded notifications:', data);
+      setNotifications(data || []);
+    } catch (error) {
+      console.error('Error loading notifications:', error);
+    }
+  };
+
+  const loadReports = async () => {
+    if (!user?.id) return;
+    
+    try {
+      console.log('Loading reports for user:', user.id);
+      
+      // Simple query first - just get reports for this user
+      const { data, error } = await supabase
+        .from('reports')
+        .select('*')
+        .eq('reporter_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Reports query error:', error);
+        if (error.message.includes('relation "reports" does not exist')) {
+          toast({
+            title: "Database Setup Required",
+            description: "Reports table not found. Please run the database setup script first.",
+            variant: "destructive"
+          });
+          setReports([]);
+          return;
+        }
+        throw error;
+      }
+      
+      console.log('Raw reports data:', data);
+      
+      // Format reports with event titles (simple fallback)
+      const formattedReports: Report[] = (data || []).map(report => ({
+        ...report,
+        event_title: report.related_event_id ? 'Related Event' : 'General Report'
+      }));
+      
+      console.log('Formatted reports:', formattedReports);
+      setReports(formattedReports);
+    } catch (error) {
+      console.error('Error loading reports:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load reports. Please check database setup.",
+        variant: "destructive"
+      });
+      setReports([]);
+    }
+  };
+
+  const loadReportMessages = async (reportId: string) => {
+    try {
+      console.log('Loading messages for report:', reportId);
+      
+      // Simple query first
+      const { data, error } = await supabase
+        .from('report_messages')
+        .select('*')
+        .eq('report_id', reportId)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Error loading messages:', error);
+        return;
+      }
+      
+      console.log('Raw messages data:', data);
+      
+      // Try to get sender names
+      let formattedMessages: ReportMessage[] = [];
+      
+      if (data && data.length > 0) {
+        try {
+          const senderIds = [...new Set(data.map(m => m.sender_id))];
+          const { data: users } = await supabase
+            .from('users')
+            .select('id, name, role')
+            .in('id', senderIds);
+          
+          const userMap = new Map();
+          users?.forEach(user => userMap.set(user.id, { name: user.name, role: user.role }));
+          
+          formattedMessages = data.map(msg => {
+            const userInfo = userMap.get(msg.sender_id) || { name: 'Unknown', role: 'user' };
+            return {
+              id: msg.id,
+              message: msg.message,
+              sender_id: msg.sender_id,
+              sender_name: userInfo.name,
+              sender_role: userInfo.role,
+              created_at: msg.created_at
+            };
+          });
+        } catch (userError) {
+          console.log('Could not load sender names, using fallback');
+          formattedMessages = data.map(msg => ({
+            id: msg.id,
+            message: msg.message,
+            sender_id: msg.sender_id,
+            sender_name: msg.sender_id === user?.id ? 'You' : 'Admin',
+            sender_role: msg.sender_id === user?.id ? 'participant' : 'admin',
+            created_at: msg.created_at
+          }));
+        }
+      }
+      
+      console.log('Formatted messages:', formattedMessages);
+      setReportMessages(formattedMessages);
+    } catch (error) {
+      console.error('Error loading report messages:', error);
+    }
+  };
+
+  const loadEventRequests = async () => {
+    if (!user?.id) return;
+    
+    try {
+      console.log('Loading event requests for user:', user.id);
+      
+      const { data, error } = await supabase
+        .from('event_requests')
+        .select('*')
+        .eq('requester_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Supabase error:', error);
+        throw error;
+      }
+      
+      console.log('Event requests loaded:', data);
+      setEventRequests(data || []);
+    } catch (error) {
+      console.error('Error loading event requests:', error);
+      toast({
+        title: "Info",
+        description: "No event requests found or table not created yet.",
+      });
+      setEventRequests([]);
+    }
+  };
+
+  useEffect(() => {
+    const userData = localStorage.getItem("user");
+    if (userData) {
+      const parsedUser = JSON.parse(userData);
+      setUser(parsedUser);
+      
+      // Check if user is participant
+      if (parsedUser.role !== "participant") {
+        if (parsedUser.role === "organizer") {
+          navigate("/organizer-dashboard");
+        } else {
+          navigate("/dashboard");
+        }
+      }
+    } else {
+      navigate("/login");
+    }
+  }, [navigate]);
+
+  // Load data when user is set
+  useEffect(() => {
+    if (user?.id) {
+      loadEvents();
+      loadNotifications();
+      loadReports();
+      loadEventRequests();
+    }
+  }, [user]);
+
+  // Auto-refresh notifications when notifications tab is active
+  useEffect(() => {
+    if (activeTab === "notifications" && user?.id) {
+      loadNotifications();
+    }
+  }, [activeTab, user?.id]);
+
+  // Auto-refresh reports and messages when reports tab is active
+  useEffect(() => {
+    if (activeTab === "reports" && user?.id) {
+      loadReports();
+      // If a report is selected, also refresh its messages
+      if (selectedReport) {
+        loadReportMessages(selectedReport.id);
+      }
+    }
+  }, [activeTab, user?.id]);
+
+  // Auto-refresh messages every 5 seconds when a report is selected
+  useEffect(() => {
+    if (selectedReport && activeTab === "reports") {
+      const interval = setInterval(() => {
+        loadReportMessages(selectedReport.id);
+      }, 5000); // Refresh every 5 seconds
+
+      return () => clearInterval(interval);
+    }
+  }, [selectedReport, activeTab]);
+
+  const handleLogout = () => {
+    localStorage.removeItem("user");
+    navigate("/login");
+  };
+
+  const handleEventRegister = async (eventId: string) => {
+    if (!user?.id) return;
+    
+    try {
+      const event = events.find(e => e.id === eventId);
+      if (!event) return;
+
+      if (event.isRegistered) {
+        // Unregister
+        const { error } = await supabase
+          .from('event_registrations')
+          .delete()
+          .eq('event_id', eventId)
+          .eq('participant_id', user.id);
+
+        if (error) {
+          console.error('Unregister error:', error);
+          throw error;
+        }
+
+        // Update participant count
+        await supabase
+          .from('events')
+          .update({ current_participants: Math.max(0, event.current_participants - 1) })
+          .eq('id', eventId);
+
+        toast({
+          title: "Unregistered",
+          description: `You have been unregistered from ${event.title}`,
+        });
+      } else {
+        // Register
+        if (event.current_participants >= event.max_participants) {
+          toast({
+            title: "Event Full",
+            description: "This event has reached maximum capacity",
+            variant: "destructive"
+          });
+          return;
+        }
+
+        const { error } = await supabase
+          .from('event_registrations')
+          .insert([{
+            event_id: eventId,
+            participant_id: user.id
+          }]);
+
+        if (error) {
+          console.error('Register error:', error);
+          throw error;
+        }
+
+        // Update participant count
+        await supabase
+          .from('events')
+          .update({ current_participants: event.current_participants + 1 })
+          .eq('id', eventId);
+
+        // Create notification for successful registration
+        try {
+          await supabase
+            .from('notifications')
+            .insert([{
+              user_id: user.id,
+              title: "Registration Confirmed",
+              message: `Your registration for "${event.title}" has been confirmed.`,
+              type: "registration_confirmed",
+              related_event_id: eventId
+            }]);
+        } catch (notifError) {
+          console.log('Notification creation failed (non-critical):', notifError);
+        }
+
+        toast({
+          title: "Registered Successfully",
+          description: `You have been registered for ${event.title}`,
+        });
+      }
+
+      // Reload events to get updated data
+      await loadEvents();
+      await loadNotifications();
+    } catch (error) {
+      console.error('Registration error:', error);
+      toast({
+        title: "Registration Failed",
+        description: "Failed to update registration. Please try again.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleToggleFavorite = async (eventId: string) => {
+    if (!user?.id) return;
+    
+    try {
+      const event = events.find(e => e.id === eventId);
+      if (!event) return;
+
+      if (event.isFavorite) {
+        // Remove from favorites
+        const { error } = await supabase
+          .from('event_favorites')
+          .delete()
+          .eq('event_id', eventId)
+          .eq('user_id', user.id);
+
+        if (error) {
+          console.error('Remove favorite error:', error);
+          // Handle specific error cases
+          if (error.message.includes('relation "event_favorites" does not exist')) {
+            toast({
+              title: "Database Setup Required",
+              description: "Please run the database setup script first.",
+              variant: "destructive"
+            });
+            return;
+          }
+          throw error;
+        }
+        
+        toast({
+          title: "Removed from Favorites",
+          description: `${event.title} has been removed from your favorites.`,
+        });
+      } else {
+        // Add to favorites
+        const { error } = await supabase
+          .from('event_favorites')
+          .insert([{
+            event_id: eventId,
+            user_id: user.id
+          }]);
+
+        if (error) {
+          console.error('Add favorite error:', error);
+          // Handle specific error cases
+          if (error.message.includes('relation "event_favorites" does not exist')) {
+            toast({
+              title: "Database Setup Required",
+              description: "Please run the database setup script first.",
+              variant: "destructive"
+            });
+            return;
+          }
+          // Handle duplicate entry (409 conflict)
+          if (error.message.includes('duplicate key') || error.code === '23505') {
+            toast({
+              title: "Already in Favorites",
+              description: `${event.title} is already in your favorites.`,
+            });
+            await loadEvents(); // Refresh to sync state
+            return;
+          }
+          throw error;
+        }
+        
+        toast({
+          title: "Added to Favorites",
+          description: `${event.title} has been added to your favorites.`,
+        });
+      }
+
+      // Reload events to get updated data
+      await loadEvents();
+    } catch (error) {
+      console.error('Favorite toggle error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to update favorites. Please try again.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleMarkAsRead = async (notificationId: string) => {
+    try {
+      const { error } = await supabase
+        .from('notifications')
+        .update({ is_read: true })
+        .eq('id', notificationId);
+
+      if (error) throw error;
+
+      // Update local state
+      setNotifications(notifications.map(notification => 
+        notification.id === notificationId 
+          ? { ...notification, is_read: true }
+          : notification
+      ));
+    } catch (error) {
+      console.error('Mark as read error:', error);
+    }
+  };
+
+  const handleCreateReport = async () => {
+    if (!user?.id || !newReportTitle.trim() || !newReportDescription.trim()) {
+      toast({
+        title: "Invalid Input",
+        description: "Please fill in all required fields",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      console.log('Creating report:', {
+        reporter_id: user.id,
+        title: newReportTitle,
+        description: newReportDescription,
+        report_type: newReportType
+      });
+
+      const { data, error } = await supabase
+        .from('reports')
+        .insert([{
+          reporter_id: user.id,
+          title: newReportTitle,
+          description: newReportDescription,
+          report_type: newReportType
+        }])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Create report error:', error);
+        if (error.message.includes('relation "reports" does not exist')) {
+          toast({
+            title: "Database Setup Required",
+            description: "Reports table not found. Please run the database setup script first.",
+            variant: "destructive"
+          });
+          return;
+        }
+        throw error;
+      }
+
+      console.log('Report created successfully:', data);
+
+      // Add initial message from user
+      try {
+        await supabase
+          .from('report_messages')
+          .insert([{
+            report_id: data.id,
+            sender_id: user.id,
+            message: newReportDescription
+          }]);
+        console.log('Initial message added to report');
+      } catch (msgError) {
+        console.log('Could not add initial message (non-critical):', msgError);
+      }
+
+      toast({
+        title: "Report Submitted",
+        description: "Your report has been submitted successfully. An admin will respond soon.",
+      });
+
+      // Reset form
+      setNewReportTitle("");
+      setNewReportDescription("");
+      setShowNewReportForm(false);
+      
+      // Reload reports to show the new one
+      await loadReports();
+    } catch (error) {
+      console.error('Create report error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to submit report. Please try again.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!user?.id || !selectedReport || !newMessage.trim()) return;
+
+    try {
+      console.log('Sending message:', {
+        report_id: selectedReport.id,
+        sender_id: user.id,
+        message: newMessage
+      });
+
+      await supabase
+        .from('report_messages')
+        .insert([{
+          report_id: selectedReport.id,
+          sender_id: user.id,
+          message: newMessage
+        }]);
+
+      setNewMessage("");
+      
+      // Immediately reload messages to show the new message
+      await loadReportMessages(selectedReport.id);
+      
+      toast({
+        title: "Message Sent",
+        description: "Your message has been sent to the admin.",
+      });
+    } catch (error) {
+      console.error('Send message error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to send message. Please try again.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleSubmitEventRequest = async () => {
+    if (!user?.id || !newEventRequest.title.trim() || !newEventRequest.description.trim() || 
+        !newEventRequest.date || !newEventRequest.time || !newEventRequest.venue.trim() ||
+        !newEventRequest.request_reason.trim()) {
+      toast({
+        title: "Invalid Input",
+        description: "Please fill in all required fields",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    // Check if custom event type is required but not provided
+    if (newEventRequest.event_type === "Others" && !newEventRequest.custom_event_type.trim()) {
+      toast({
+        title: "Custom Event Type Required",
+        description: "Please specify your custom event type when 'Others' is selected",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      setLoading(true);
+      console.log('Submitting event request for user:', user.id);
+      console.log('Request data:', newEventRequest);
+
+      // Use custom event type if "Others" is selected, otherwise use the standard type
+      const finalEventType = newEventRequest.event_type === "Others" 
+        ? newEventRequest.custom_event_type 
+        : newEventRequest.event_type;
+
+      const requestData = {
+        requester_id: user.id,
+        title: newEventRequest.title,
+        description: newEventRequest.description,
+        date: newEventRequest.date,
+        time: newEventRequest.time,
+        venue: newEventRequest.venue,
+        event_type: finalEventType, // Use the final event type (either standard or custom)
+        expected_participants: newEventRequest.expected_participants,
+        requirements: newEventRequest.requirements || null,
+        budget_estimate: newEventRequest.budget_estimate > 0 ? newEventRequest.budget_estimate : null,
+        request_reason: newEventRequest.request_reason
+      };
+
+      console.log('Sending to Supabase:', requestData);
+
+      const { data, error } = await supabase
+        .from('event_requests')
+        .insert([requestData])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Supabase insert error:', error);
+        
+        // Check if table doesn't exist
+        if (error.message.includes('relation "event_requests" does not exist')) {
+          toast({
+            title: "Database Error",
+            description: "Event requests table not found. Please run the database setup first.",
+            variant: "destructive"
+          });
+          return;
+        }
+        
+        // Check if RLS policy issue
+        if (error.message.includes('new row violates row-level security policy')) {
+          toast({
+            title: "Permission Error", 
+            description: "Unable to create request. Please check your account permissions.",
+            variant: "destructive"
+          });
+          return;
+        }
+        
+        throw error;
+      }
+
+      console.log('Event request created:', data);
+
+      // Create notification for user
+      try {
+        await supabase
+          .from('notifications')
+          .insert([{
+            user_id: user.id,
+            title: "Event Request Submitted",
+            message: `Your ${finalEventType} event request "${newEventRequest.title}" has been submitted for admin review.`,
+            type: "announcement"
+          }]);
+      } catch (notifError) {
+        console.log('Notification error (non-critical):', notifError);
+      }
+
+      toast({
+        title: "Request Submitted",
+        description: `Your ${finalEventType} event request has been submitted successfully. You'll be notified when it's reviewed.`,
+      });
+
+      // Reset form
+      setNewEventRequest({
+        title: "",
+        description: "",
+        date: "",
+        time: "",
+        venue: "",
+        event_type: "Academic",
+        custom_event_type: "",
+        expected_participants: 50,
+        requirements: "",
+        budget_estimate: 0,
+        request_reason: ""
+      });
+      setShowNewRequestForm(false);
+      
+      // Reload data
+      await loadEventRequests();
+      await loadNotifications();
+      
+    } catch (error) {
+      console.error('Submit event request error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to submit event request. Please try again or contact admin.",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case "approved":
+        return "bg-green-100 text-green-800";
+      case "pending":
+        return "bg-yellow-100 text-yellow-800";
+      case "rejected":
+        return "bg-red-100 text-red-800";
+      case "completed":
+        return "bg-blue-100 text-blue-800";
+      case "open":
+        return "bg-red-100 text-red-800";
+      case "in_progress":
+        return "bg-yellow-100 text-yellow-800";
+      case "resolved":
+        return "bg-green-100 text-green-800";
+      case "closed":
+        return "bg-gray-100 text-gray-800";
+      default:
+        return "bg-gray-100 text-gray-800";
+    }
+  };
+
+  const getNotificationIcon = (type: string) => {
+    switch (type) {
+      case "event_approved":
+        return <CheckCircle className="w-4 h-4 text-green-600" />;
+      case "event_rejected":
+        return <AlertCircle className="w-4 h-4 text-red-600" />;
+      case "event_reminder":
+        return <Clock className="w-4 h-4 text-blue-600" />;
+      case "registration_confirmed":
+        return <Calendar className="w-4 h-4 text-green-600" />;
+      case "announcement":
+        return <Bell className="w-4 h-4 text-purple-600" />;
+      default:
+        return <Bell className="w-4 h-4" />;
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  };
+
+  const formatDateTime = (dateString: string) => {
+    return new Date(dateString).toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const filteredEvents = events.filter(event => {
+    const matchesSearch = event.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          event.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          event.organizer_name.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    if (filterType === "all") return matchesSearch;
+    if (filterType === "available") return matchesSearch && !event.isMyEvent; // Events by others
+    if (filterType === "myevents") return matchesSearch && event.isMyEvent; // User's approved events
+    if (filterType === "registered") return matchesSearch && event.isRegistered;
+    if (filterType === "favorites") return matchesSearch && event.isFavorite;
+    
+    return matchesSearch && event.event_type.toLowerCase() === filterType.toLowerCase();
+  });
+
+  const unreadNotifications = notifications.filter(n => !n.is_read).length;
+
+  if (!user) {
+    return <div>Loading...</div>;
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-background via-primary/5 to-secondary/5">
+      {/* Header */}
+      <header className="bg-white/80 backdrop-blur-md border-b border-border/50 sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
+            <div className="flex items-center space-x-4">
+              <img src={logo} alt="Logo" className="w-8 h-8" />
+              <div>
+                <h1 className="text-xl font-bold gradient-primary bg-clip-text text-transparent">
+                  Participant Dashboard
+                </h1>
+                <p className="text-sm text-muted-foreground">School Event Management</p>
+              </div>
+            </div>
+            
+            <div className="flex items-center space-x-4">
+              <Button variant="ghost" size="sm" className="relative">
+                <Bell className="w-4 h-4" />
+                {unreadNotifications > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                    {unreadNotifications}
+                  </span>
+                )}
+              </Button>
+              <div className="flex items-center space-x-2">
+                <User className="w-4 h-4" />
+                <span className="text-sm font-medium">{user.name}</span>
+                <Badge variant="secondary">Participant</Badge>
+              </div>
+              <Button variant="ghost" size="sm" onClick={handleLogout}>
+                <LogOut className="w-4 h-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+          <TabsList className="grid w-full grid-cols-4 bg-white/50 backdrop-blur-sm">
+            <TabsTrigger value="calendar" className="flex items-center space-x-2">
+              <Calendar className="w-4 h-4" />
+              <span>Calendar</span>
+            </TabsTrigger>
+            <TabsTrigger value="request" className="flex items-center space-x-2">
+              <Plus className="w-4 h-4" />
+              <span>Request Event</span>
+            </TabsTrigger>
+            <TabsTrigger value="notifications" className="flex items-center space-x-2 relative">
+              <Bell className="w-4 h-4" />
+              <span>Notifications</span>
+              {unreadNotifications > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                  {unreadNotifications}
+                </span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="reports" className="flex items-center space-x-2">
+              <FileText className="w-4 h-4" />
+              <span>Reports</span>
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Calendar of Activities Tab */}
+          <TabsContent value="calendar" className="space-y-6">
+            {/* Search and Filter */}
+            <Card className="card-elevated">
+              <CardContent className="p-6">
+                <div className="flex flex-col md:flex-row gap-4">
+                  <div className="flex-1 relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
+                    <Input
+                      placeholder="Search events..."
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="pl-10"
+                    />
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Filter className="w-4 h-4 text-muted-foreground" />
+                    <select
+                      value={filterType}
+                      onChange={(e) => setFilterType(e.target.value)}
+                      className="px-3 py-2 border rounded-md"
+                    >
+                      <option value="all">All Events</option>
+                      <option value="available">Available Events</option>
+                      <option value="myevents">My Events</option>
+                      <option value="registered">Registered Events</option>
+                      <option value="favorites">Favorites</option>
+                      <option value="academic">Academic</option>
+                      <option value="sports">Sports</option>
+                      <option value="cultural">Cultural</option>
+                      <option value="social">Social</option>
+                      <option value="workshop">Workshop</option>
+                      <option value="conference">Conference</option>
+                      <option value="competition">Competition</option>
+                      <option value="seminar">Seminar</option>
+                      <option value="training">Training</option>
+                      <option value="others">Others</option>
+                    </select>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Stats Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <Card className="card-elevated">
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">Available Events</p>
+                      <p className="text-3xl font-bold gradient-primary bg-clip-text text-transparent">
+                        {events.filter(e => !e.isMyEvent).length}
+                      </p>
+                    </div>
+                    <CalendarDays className="w-8 h-8 text-primary" />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="card-elevated">
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">My Events</p>
+                      <p className="text-3xl font-bold text-green-600">
+                        {events.filter(e => e.isMyEvent).length}
+                      </p>
+                    </div>
+                    <CheckCircle className="w-8 h-8 text-green-600" />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="card-elevated">
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">Registered</p>
+                      <p className="text-3xl font-bold text-blue-600">
+                        {events.filter(e => e.isRegistered).length}
+                      </p>
+                    </div>
+                    <Users className="w-8 h-8 text-blue-600" />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="card-elevated">
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">Favorites</p>
+                      <p className="text-3xl font-bold text-red-500">
+                        {events.filter(e => e.isFavorite).length}
+                      </p>
+                    </div>
+                    <Heart className="w-8 h-8 text-red-500" />
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Events Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredEvents.map((event) => (
+                <Card key={event.id} className="card-elevated overflow-hidden">
+                  <CardContent className="p-0">
+                    {/* Event Header */}
+                    <div className="relative p-6 pb-4">
+                      <div className="flex items-start justify-between mb-4">
+                        <div className="flex items-center space-x-2">
+                          <Badge className={getStatusColor(event.status)}>
+                            {event.status}
+                          </Badge>
+                          {event.isMyEvent && (
+                            <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                              My Event
+                            </Badge>
+                          )}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleToggleFavorite(event.id)}
+                          className="p-1"
+                        >
+                          <Heart className={`w-4 h-4 ${event.isFavorite ? 'fill-red-500 text-red-500' : 'text-muted-foreground'}`} />
+                        </Button>
+                      </div>
+                      
+                      <h3 
+                        className="font-bold text-lg mb-2 cursor-pointer hover:text-primary"
+                        onClick={() => {
+                          setSelectedEvent(event);
+                          setShowEventDetails(true);
+                        }}
+                      >
+                        {event.title}
+                      </h3>
+                      <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
+                        {event.description}
+                      </p>
+                      
+                      <div className="space-y-2 text-sm">
+                        <div className="flex items-center space-x-2">
+                          <Calendar className="w-4 h-4 text-muted-foreground" />
+                          <span>{formatDate(event.date)} at {event.time}</span>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <MapPin className="w-4 h-4 text-muted-foreground" />
+                          <span>{event.venue}</span>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <User className="w-4 h-4 text-muted-foreground" />
+                          <span>{event.organizer_name}</span>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <Users className="w-4 h-4 text-muted-foreground" />
+                          <span>{event.current_participants}/{event.max_participants} participants</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Event Actions */}
+                    <div className="border-t p-4 bg-muted/20">
+                      <div className="flex items-center space-x-2">
+                        <Button
+                          variant={event.isRegistered ? "secondary" : "default"}
+                          size="sm"
+                          onClick={() => handleEventRegister(event.id)}
+                          className="flex-1"
+                          disabled={loading || event.status === "completed" || (event.current_participants >= event.max_participants && !event.isRegistered)}
+                        >
+                          {loading ? "Loading..." : (event.isRegistered ? "Registered" : "Register")}
+                        </Button>
+                        <Button variant="ghost" size="sm">
+                          <Share2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+
+            {filteredEvents.length === 0 && (
+              <Card className="card-elevated">
+                <CardContent className="p-12 text-center">
+                  <CalendarDays className="w-16 h-16 mx-auto mb-4 text-muted-foreground" />
+                  <h3 className="text-lg font-medium mb-2">No events found</h3>
+                  <p className="text-muted-foreground">
+                    Try adjusting your search or filter criteria
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* Event Request Tab */}
+          <TabsContent value="request" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Request New Event</CardTitle>
+                    <CardDescription>Submit a request for a new event to be organized</CardDescription>
+                  </div>
+                  <Button 
+                    className="gradient-primary"
+                    onClick={() => setShowNewRequestForm(true)}
+                    disabled={showNewRequestForm}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    New Request
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {/* Event Request Form */}
+                {showNewRequestForm && (
+                  <Card className="mb-6 border-2 border-primary/20">
+                    <CardHeader>
+                      <CardTitle className="text-lg">Event Request Form</CardTitle>
+                      <CardDescription>Please fill out all required fields for your event request</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="event-title">Event Title *</Label>
+                          <Input
+                            id="event-title"
+                            value={newEventRequest.title}
+                            onChange={(e) => setNewEventRequest({...newEventRequest, title: e.target.value})}
+                            placeholder="Enter event title"
+                          />
+                        </div>
+                        
+                        <div>
+                          <Label htmlFor="event-type">Event Type *</Label>
+                          <select
+                            id="event-type"
+                            value={newEventRequest.event_type}
+                            onChange={(e) => setNewEventRequest({...newEventRequest, event_type: e.target.value, custom_event_type: ""})}
+                            className="w-full mt-1 p-2 border rounded-md"
+                          >
+                            <option value="Academic">Academic</option>
+                            <option value="Sports">Sports</option>
+                            <option value="Cultural">Cultural</option>
+                            <option value="Social">Social</option>
+                            <option value="Workshop">Workshop</option>
+                            <option value="Conference">Conference</option>
+                            <option value="Competition">Competition</option>
+                            <option value="Seminar">Seminar</option>
+                            <option value="Training">Training</option>
+                            <option value="Others">Others (Custom)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Custom Event Type Input - Only show when "Others" is selected */}
+                      {newEventRequest.event_type === "Others" && (
+                        <div>
+                          <Label htmlFor="custom-event-type">Custom Event Type *</Label>
+                          <Input
+                            id="custom-event-type"
+                            value={newEventRequest.custom_event_type}
+                            onChange={(e) => setNewEventRequest({...newEventRequest, custom_event_type: e.target.value})}
+                            placeholder="e.g., Gaming Tournament, Art Exhibition, Cooking Contest, etc."
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Type your custom event category (e.g., "Gaming Tournament", "Art Exhibition", "Cooking Contest")
+                          </p>
+                        </div>
+                      )}
+
+                      <div>
+                        <Label htmlFor="event-description">Event Description *</Label>
+                        <Textarea
+                          id="event-description"
+                          value={newEventRequest.description}
+                          onChange={(e) => setNewEventRequest({...newEventRequest, description: e.target.value})}
+                          placeholder="Describe your event in detail"
+                          rows={3}
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                          <Label htmlFor="event-date">Event Date *</Label>
+                          <Input
+                            id="event-date"
+                            type="date"
+                            value={newEventRequest.date}
+                            onChange={(e) => setNewEventRequest({...newEventRequest, date: e.target.value})}
+                          />
+                        </div>
+                        
+                        <div>
+                          <Label htmlFor="event-time">Event Time *</Label>
+                          <Input
+                            id="event-time"
+                            type="time"
+                            value={newEventRequest.time}
+                            onChange={(e) => setNewEventRequest({...newEventRequest, time: e.target.value})}
+                          />
+                        </div>
+                        
+                        <div>
+                          <Label htmlFor="expected-participants">Expected Participants</Label>
+                          <Input
+                            id="expected-participants"
+                            type="number"
+                            value={newEventRequest.expected_participants}
+                            onChange={(e) => setNewEventRequest({...newEventRequest, expected_participants: parseInt(e.target.value) || 50})}
+                            placeholder="50"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="event-venue">Venue *</Label>
+                          <Input
+                            id="event-venue"
+                            value={newEventRequest.venue}
+                            onChange={(e) => setNewEventRequest({...newEventRequest, venue: e.target.value})}
+                            placeholder="Event venue/location"
+                          />
+                        </div>
+                        
+                        <div>
+                          <Label htmlFor="budget-estimate">Budget Estimate (Optional)</Label>
+                          <Input
+                            id="budget-estimate"
+                            type="number"
+                            step="0.01"
+                            value={newEventRequest.budget_estimate}
+                            onChange={(e) => setNewEventRequest({...newEventRequest, budget_estimate: parseFloat(e.target.value) || 0})}
+                            placeholder="0.00"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <Label htmlFor="requirements">Special Requirements (Optional)</Label>
+                        <Textarea
+                          id="requirements"
+                          value={newEventRequest.requirements}
+                          onChange={(e) => setNewEventRequest({...newEventRequest, requirements: e.target.value})}
+                          placeholder="Any special equipment, setup, or requirements for your event"
+                          rows={2}
+                        />
+                      </div>
+
+                      <div>
+                        <Label htmlFor="request-reason">Request Reason *</Label>
+                        <Textarea
+                          id="request-reason"
+                          value={newEventRequest.request_reason}
+                          onChange={(e) => setNewEventRequest({...newEventRequest, request_reason: e.target.value})}
+                          placeholder="Why is this event important? What benefits will it provide to participants?"
+                          rows={3}
+                        />
+                      </div>
+
+                      <div className="flex items-center space-x-4">
+                        <Button onClick={handleSubmitEventRequest} disabled={loading} className="gradient-primary">
+                          <FileText className="w-4 h-4 mr-2" />
+                          Submit Request
+                        </Button>
+                        <Button 
+                          variant="outline" 
+                          onClick={() => {
+                            setShowNewRequestForm(false);
+                            setNewEventRequest({
+                              title: "",
+                              description: "",
+                              date: "",
+                              time: "",
+                              venue: "",
+                              event_type: "Academic",
+                              custom_event_type: "",
+                              expected_participants: 50,
+                              requirements: "",
+                              budget_estimate: 0,
+                              request_reason: ""
+                            });
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Event Requests History */}
+                <div className="space-y-4">
+                  <h3 className="font-medium">Your Event Requests</h3>
+                  {eventRequests.length === 0 ? (
+                    <Card className="p-6 text-center">
+                      <Plus className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+                      <p className="text-muted-foreground">No event requests submitted yet</p>
+                      <Button 
+                        variant="outline" 
+                        className="mt-4"
+                        onClick={() => setShowNewRequestForm(true)}
+                      >
+                        Submit Your First Request
+                      </Button>
+                    </Card>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {eventRequests.map((request) => (
+                        <Card key={request.id} className="overflow-hidden">
+                          <CardContent className="p-6">
+                            <div className="flex items-center justify-between mb-4">
+                              <h4 className="font-medium">{request.title}</h4>
+                              <Badge className={getStatusColor(request.status)}>
+                                {request.status}
+                              </Badge>
+                            </div>
+                            
+                            <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
+                              {request.description}
+                            </p>
+                            
+                            <div className="space-y-2 text-sm">
+                              <div className="flex items-center space-x-2">
+                                <Calendar className="w-4 h-4 text-muted-foreground" />
+                                <span>{formatDate(request.date)} at {request.time}</span>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <MapPin className="w-4 h-4 text-muted-foreground" />
+                                <span>{request.venue}</span>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <Badge variant="outline">{request.event_type}</Badge>
+                                <span className="text-xs">{request.expected_participants} participants</span>
+                              </div>
+                            </div>
+                            
+                            {request.admin_comments && (
+                              <div className="mt-4 p-3 bg-muted/50 rounded-lg">
+                                <p className="text-xs font-medium mb-1">Admin Comments:</p>
+                                <p className="text-xs">{request.admin_comments}</p>
+                              </div>
+                            )}
+                            
+                            <div className="mt-4 text-xs text-muted-foreground">
+                              Submitted: {formatDate(request.created_at)}
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Notifications Tab */}
+          <TabsContent value="notifications" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Notifications</CardTitle>
+                    <CardDescription>Stay updated with event announcements and reminders</CardDescription>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Button variant="outline" size="sm" onClick={loadNotifications}>
+                      <Bell className="w-4 h-4 mr-2" />
+                      Refresh
+                    </Button>
+                    <Button variant="outline" size="sm">
+                      Mark All as Read
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {notifications.length === 0 ? (
+                    <div className="text-center py-8">
+                      <Bell className="w-16 h-16 mx-auto mb-4 text-muted-foreground" />
+                      <h3 className="text-lg font-medium mb-2">No notifications yet</h3>
+                      <p className="text-muted-foreground">
+                        You'll see event updates and announcements here
+                      </p>
+                      <Button 
+                        variant="outline" 
+                        className="mt-4"
+                        onClick={loadNotifications}
+                      >
+                        <Bell className="w-4 h-4 mr-2" />
+                        Check for Updates
+                      </Button>
+                    </div>
+                  ) : (
+                    notifications.map((notification) => (
+                      <div
+                        key={notification.id}
+                        className={`p-4 border rounded-lg cursor-pointer transition-all hover:shadow-md ${
+                          notification.is_read 
+                            ? 'bg-background border-border' 
+                            : 'bg-primary/5 border-primary/20 shadow-sm'
+                        }`}
+                        onClick={() => handleMarkAsRead(notification.id)}
+                      >
+                        <div className="flex items-start space-x-3">
+                          <div className={`p-2 rounded-full ${
+                            notification.is_read ? 'bg-muted' : 'bg-primary/10'
+                          }`}>
+                            {getNotificationIcon(notification.type)}
+                          </div>
+                          <div className="flex-1">
+                            <div className="flex items-center justify-between mb-1">
+                              <h4 className={`font-medium ${!notification.is_read ? 'text-primary' : ''}`}>
+                                {notification.title}
+                              </h4>
+                              <div className="flex items-center space-x-2">
+                                <span className="text-xs text-muted-foreground">
+                                  {formatDate(notification.created_at)}
+                                </span>
+                                {!notification.is_read && (
+                                  <div className="w-2 h-2 bg-primary rounded-full"></div>
+                                )}
+                              </div>
+                            </div>
+                            <p className="text-sm text-muted-foreground">{notification.message}</p>
+                            {!notification.is_read && (
+                              <div className="mt-2">
+                                <Badge variant="default" className="text-xs">New</Badge>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Reports Tab - Chat and Problem Reporting */}
+          <TabsContent value="reports" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Reports & Issues</CardTitle>
+                    <CardDescription>Report problems about event rejections or other issues</CardDescription>
+                  </div>
+                  <Button 
+                    className="gradient-primary"
+                    onClick={() => setShowNewReportForm(true)}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    New Report
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {/* New Report Form */}
+                {showNewReportForm && (
+                  <Card className="mb-6 border-2 border-primary/20">
+                    <CardHeader>
+                      <CardTitle className="text-lg">Submit New Report</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div>
+                        <Label htmlFor="report-type">Report Type</Label>
+                        <select
+                          id="report-type"
+                          value={newReportType}
+                          onChange={(e) => setNewReportType(e.target.value as any)}
+                          className="w-full mt-1 p-2 border rounded-md"
+                        >
+                          <option value="rejection_complaint">Event Rejection Complaint</option>
+                          <option value="technical_issue">Technical Issue</option>
+                          <option value="general_inquiry">General Inquiry</option>
+                          <option value="event_feedback">Event Feedback</option>
+                        </select>
+                      </div>
+                      
+                      <div>
+                        <Label htmlFor="report-title">Title</Label>
+                        <Input
+                          id="report-title"
+                          value={newReportTitle}
+                          onChange={(e) => setNewReportTitle(e.target.value)}
+                          placeholder="Brief description of the issue"
+                        />
+                      </div>
+                      
+                      <div>
+                        <Label htmlFor="report-description">Description</Label>
+                        <Textarea
+                          id="report-description"
+                          value={newReportDescription}
+                          onChange={(e) => setNewReportDescription(e.target.value)}
+                          placeholder="Provide detailed information about your issue or complaint"
+                          rows={4}
+                        />
+                      </div>
+                      
+                      <div className="flex items-center space-x-2">
+                        <Button onClick={handleCreateReport} disabled={loading}>
+                          <FileText className="w-4 h-4 mr-2" />
+                          Submit Report
+                        </Button>
+                        <Button 
+                          variant="outline" 
+                          onClick={() => {
+                            setShowNewReportForm(false);
+                            setNewReportTitle("");
+                            setNewReportDescription("");
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Reports List */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Reports Sidebar */}
+                  <div className="space-y-4">
+                    <h3 className="font-medium">Your Reports</h3>
+                    {reports.length === 0 ? (
+                      <Card className="p-6 text-center">
+                        <FileText className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+                        <p className="text-muted-foreground">No reports submitted yet</p>
+                        <Button 
+                          variant="outline" 
+                          className="mt-4"
+                          onClick={() => setShowNewReportForm(true)}
+                        >
+                          Submit Your First Report
+                        </Button>
+                      </Card>
+                    ) : (
+                      reports.map((report) => (
+                        <Card 
+                          key={report.id} 
+                          className={`cursor-pointer transition-colors hover:border-primary/50 ${
+                            selectedReport?.id === report.id ? 'border-primary bg-primary/5' : ''
+                          }`}
+                          onClick={() => {
+                            setSelectedReport(report);
+                            loadReportMessages(report.id);
+                          }}
+                        >
+                          <CardContent className="p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="font-medium text-sm">{report.title}</h4>
+                              <Badge className={getStatusColor(report.status)}>
+                                {report.status}
+                              </Badge>
+                            </div>
+                            <p className="text-xs text-muted-foreground mb-2">
+                              {report.event_title && `Event: ${report.event_title}`}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {formatDate(report.created_at)}
+                            </p>
+                            <p className="text-sm mt-2 line-clamp-2">
+                              {report.description}
+                            </p>
+                          </CardContent>
+                        </Card>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Chat Interface */}
+                  <div>
+                    {selectedReport ? (
+                      <Card className="h-96 flex flex-col">
+                        <CardHeader className="pb-3">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <CardTitle className="text-lg">{selectedReport.title}</CardTitle>
+                              <CardDescription>
+                                {selectedReport.event_title && `Event: ${selectedReport.event_title}`}
+                              </CardDescription>
+                            </div>
+                            <Badge className={getStatusColor(selectedReport.status)}>
+                              {selectedReport.status}
+                            </Badge>
+                          </div>
+                        </CardHeader>
+                        
+                        {/* Messages */}
+                        <CardContent className="flex-1 overflow-y-auto space-y-3">
+                          {reportMessages.map((message) => (
+                            <div
+                              key={message.id}
+                              className={`flex ${
+                                message.sender_id === user?.id ? 'justify-end' : 'justify-start'
+                              }`}
+                            >
+                              <div
+                                className={`max-w-xs rounded-lg p-3 ${
+                                  message.sender_id === user?.id
+                                    ? 'bg-primary text-primary-foreground'
+                                    : 'bg-muted'
+                                }`}
+                              >
+                                <div className="flex items-center space-x-2 mb-1">
+                                  <span className="text-xs font-medium">
+                                    {message.sender_name}
+                                  </span>
+                                  <Badge variant="outline" className="text-xs">
+                                    {message.sender_role}
+                                  </Badge>
+                                </div>
+                                <p className="text-sm">{message.message}</p>
+                                <p className="text-xs opacity-70 mt-1">
+                                  {formatDateTime(message.created_at)}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                        </CardContent>
+                        
+                        {/* Message Input */}
+                        {selectedReport.status !== 'closed' && (
+                          <div className="p-4 border-t">
+                            <div className="flex items-center space-x-2 mb-2">
+                              <Button 
+                                variant="outline" 
+                                size="sm"
+                                onClick={() => {
+                                  loadReportMessages(selectedReport.id);
+                                  toast({
+                                    title: "Messages Refreshed",
+                                    description: "Checking for new admin replies..."
+                                  });
+                                }}
+                              >
+                                <Bell className="w-4 h-4 mr-2" />
+                                Refresh Messages
+                              </Button>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <Input
+                                value={newMessage}
+                                onChange={(e) => setNewMessage(e.target.value)}
+                                placeholder="Type your message..."
+                                onKeyPress={(e) => {
+                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleSendMessage();
+                                  }
+                                }}
+                              />
+                              <Button 
+                                onClick={handleSendMessage}
+                                disabled={!newMessage.trim() || loading}
+                                size="sm"
+                              >
+                                <Send className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </Card>
+                    ) : (
+                      <Card className="h-96 flex items-center justify-center">
+                        <div className="text-center">
+                          <FileText className="w-16 h-16 mx-auto mb-4 text-muted-foreground" />
+                          <h3 className="text-lg font-medium mb-2">Select a Report</h3>
+                          <p className="text-muted-foreground">
+                            Choose a report from the left to view the conversation
+                          </p>
+                        </div>
+                      </Card>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </main>
+      
+      {/* Event Details Modal */}
+      {showEventDetails && selectedEvent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold">{selectedEvent.title}</h2>
+                <Button
+                  variant="ghost"
+                  onClick={() => setShowEventDetails(false)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  ×
+                </Button>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="flex items-center space-x-2">
+                  <Badge className={getStatusColor(selectedEvent.status)}>
+                    {selectedEvent.status}
+                  </Badge>
+                  {selectedEvent.isMyEvent && (
+                    <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                      My Event
+                    </Badge>
+                  )}
+                  <Badge variant="outline">{selectedEvent.event_type}</Badge>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center space-x-2">
+                      <Calendar className="w-5 h-5 text-muted-foreground" />
+                      <span className="font-medium">Date:</span>
+                      <span>{formatDate(selectedEvent.date)}</span>
+                    </div>
+                    
+                    <div className="flex items-center space-x-2">
+                      <Clock className="w-5 h-5 text-muted-foreground" />
+                      <span className="font-medium">Time:</span>
+                      <span>{selectedEvent.time}</span>
+                    </div>
+                    
+                    <div className="flex items-center space-x-2">
+                      <MapPin className="w-5 h-5 text-muted-foreground" />
+                      <span className="font-medium">Venue:</span>
+                      <span>{selectedEvent.venue}</span>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    <div className="flex items-center space-x-2">
+                      <User className="w-5 h-5 text-muted-foreground" />
+                      <span className="font-medium">Organizer:</span>
+                      <span>{selectedEvent.organizer_name}</span>
+                    </div>
+                    
+                    <div className="flex items-center space-x-2">
+                      <Users className="w-5 h-5 text-muted-foreground" />
+                      <span className="font-medium">Participants:</span>
+                      <span>{selectedEvent.current_participants}/{selectedEvent.max_participants}</span>
+                    </div>
+                    
+                    <div className="flex items-center space-x-2">
+                      <span className="font-medium">Registration:</span>
+                      {selectedEvent.isRegistered ? (
+                        <Badge className="bg-green-100 text-green-800">Registered</Badge>
+                      ) : (
+                        <Badge variant="outline">Not Registered</Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                
+                <div>
+                  <h3 className="font-medium mb-2">Description:</h3>
+                  <p className="text-muted-foreground bg-muted/50 p-4 rounded-lg">
+                    {selectedEvent.description || 'No description available.'}
+                  </p>
+                </div>
+                
+                <div className="flex items-center space-x-4 pt-4 border-t">
+                  {!selectedEvent.isMyEvent && (
+                    <>
+                      <Button
+                        variant={selectedEvent.isRegistered ? "secondary" : "default"}
+                        onClick={() => {
+                          handleEventRegister(selectedEvent.id);
+                          setShowEventDetails(false);
+                        }}
+                        disabled={loading || selectedEvent.current_participants >= selectedEvent.max_participants && !selectedEvent.isRegistered}
+                      >
+                        {selectedEvent.isRegistered ? "Unregister" : "Register"}
+                      </Button>
+                      
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          handleToggleFavorite(selectedEvent.id);
+                          setShowEventDetails(false);
+                        }}
+                      >
+                        <Heart className={`w-4 h-4 mr-2 ${selectedEvent.isFavorite ? 'fill-red-500 text-red-500' : ''}`} />
+                        {selectedEvent.isFavorite ? "Remove Favorite" : "Add to Favorites"}
+                      </Button>
+                    </>
+                  )}
+                  
+                  {selectedEvent.isMyEvent && (
+                    <div className="text-sm text-muted-foreground">
+                      This is your event. You are automatically registered as the organizer.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default ParticipantDashboard;

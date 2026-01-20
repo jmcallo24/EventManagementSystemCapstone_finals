@@ -1,0 +1,3908 @@
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { 
+  Calendar, 
+  Users, 
+  Clock, 
+  CheckCircle, 
+  Plus, 
+  TrendingUp, 
+  AlertCircle,
+  Activity,
+  CalendarDays,
+  MapPin,
+  Bell,
+  FileText,
+  Award,
+  Star,
+  Heart,
+  Share2,
+  Download,
+  LogOut,
+  User,
+  Settings,
+  Filter,
+  Search,
+  Send,
+  Workflow,
+  Camera
+} from "lucide-react";
+import Sidebar from "@/components/Sidebar";
+import logo from "@/assets/image.png";
+import { supabase } from "@/lib/supabaseClient";
+import { registrationService } from "@/lib/registrationService";
+import { useToast } from "@/hooks/use-toast";
+
+interface Event {
+  id: string;
+  title: string;
+  date: string;
+  time: string;
+  venue: string;
+  organizer_name: string;
+  current_participants: number;
+  max_participants: number;
+  status: "pending" | "approved" | "rejected" | "completed";
+  event_type: string;
+  description: string;
+  isRegistered: boolean;
+  isFavorite: boolean;
+  isMyEvent: boolean; // NEW - indicates if this is user's approved request
+}
+
+interface Notification {
+  id: string;
+  title: string;
+  message: string;
+  created_at: string;
+  type: "event_approved" | "event_rejected" | "event_reminder" | "registration_confirmed" | "announcement";
+  is_read: boolean;
+  related_event_id?: string;
+}
+
+interface Report {
+  id: string;
+  title: string;
+  description: string;
+  report_type: "rejection_complaint" | "technical_issue" | "general_inquiry" | "event_feedback";
+  status: "open" | "in_progress" | "resolved" | "closed";
+  admin_response?: string;
+  created_at: string;
+  related_event_id?: string;
+  event_title?: string;
+}
+
+interface ReportMessage {
+  id: string;
+  message: string;
+  sender_id: string;
+  sender_name: string;
+  sender_role: string;
+  created_at: string;
+}
+
+interface EventRequest {
+  id: string;
+  title: string;
+  description: string;
+  date: string;
+  time: string;
+  venue: string;
+  event_type: string;
+  expected_participants: number;
+  requirements?: string;
+  budget_estimate?: number;
+  request_reason: string;
+  status: "pending" | "approved" | "rejected" | "under_review";
+  admin_comments?: string;
+  created_at: string;
+  form_data?: any; // Store complete official form data
+}
+
+// Official Event Request Form Interface (matching the image)
+interface OfficialEventRequest {
+  // Request Details
+  eventRequestedBy: string;
+  position: string;
+  organization: string;
+  contactNumber: string;
+  email: string;
+  dateOfSubmission: string;
+  
+  // Event Information
+  eventName: string;
+  purpose: string;
+  participants: string;
+  modality: string;
+  eventDate: string;
+  eventTime: string;
+  venue: string;
+  overallInCharge: string;
+  
+  // Committee Assignments (1-10)
+  invitation: string;
+  program: string;
+  soundSystem: string;
+  stageDecoration: string;
+  demolitionCleanup: string;
+  foodRefreshments: string;
+  safetySecurityUsher: string;
+  documentation: string;
+  registration: string;
+  evaluation: string;
+  
+  // Pre-Event Requirements (checkboxes)
+  letterOfRequest: boolean;
+  studentBoardResolution: boolean;
+  eventProgramInvitation: boolean;
+  listOfPermits: boolean;
+  copyOfCertificate: boolean;
+  
+  // Post-Event Requirements
+  postEventResult: boolean;
+  accomplishmentReport: boolean;
+}
+
+const ParticipantDashboard = () => {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const [user, setUser] = useState<any>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [activeTab, setActiveTab] = useState("dashboard");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterType, setFilterType] = useState("all");
+  const [loading, setLoading] = useState(false);
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  const [reportMessages, setReportMessages] = useState<ReportMessage[]>([]);
+  const [newMessage, setNewMessage] = useState("");
+  const [newReportTitle, setNewReportTitle] = useState("");
+  const [newReportDescription, setNewReportDescription] = useState("");
+  const [newReportType, setNewReportType] = useState<"rejection_complaint" | "technical_issue" | "general_inquiry" | "event_feedback">("rejection_complaint");
+  const [showNewReportForm, setShowNewReportForm] = useState(false);
+  
+  // Event details modal
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [showEventDetails, setShowEventDetails] = useState(false);
+  
+  // Event Request states
+  const [eventRequests, setEventRequests] = useState<EventRequest[]>([]);
+  const [showNewRequestForm, setShowNewRequestForm] = useState(false);
+  
+  // Calendar specific states
+  const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
+  const [calendarSearch, setCalendarSearch] = useState("");
+  const [calendarFilter, setCalendarFilter] = useState<'all' | 'upcoming' | 'today' | 'this_week' | 'this_month'>('all');
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  
+  // Events tab specific states
+  const [eventsFilter, setEventsFilter] = useState<'all' | 'my_events' | 'registered'>('all');
+  const [eventsSearch, setEventsSearch] = useState("");
+  
+  // Official Event Request Form State (matching the image)
+  const [officialEventRequest, setOfficialEventRequest] = useState<OfficialEventRequest>({
+    // Request Details
+    eventRequestedBy: "",
+    position: "",
+    organization: "",
+    contactNumber: "",
+    email: "",
+    dateOfSubmission: new Date().toISOString().split('T')[0],
+    
+    // Event Information  
+    eventName: "",
+    purpose: "",
+    participants: "",
+    modality: "Face-to-Face",
+    eventDate: "",
+    eventTime: "",
+    venue: "",
+    overallInCharge: "",
+    
+    // Committee Assignments
+    invitation: "",
+    program: "",
+    soundSystem: "",
+    stageDecoration: "",
+    demolitionCleanup: "",
+    foodRefreshments: "",
+    safetySecurityUsher: "",
+    documentation: "",
+    registration: "",
+    evaluation: "",
+    
+    // Pre-Event Requirements
+    letterOfRequest: false,
+    studentBoardResolution: false,
+    eventProgramInvitation: false,
+    listOfPermits: false,
+    copyOfCertificate: false,
+    
+    // Post-Event Requirements
+    postEventResult: false,
+    accomplishmentReport: false
+  });
+  
+  const [newEventRequest, setNewEventRequest] = useState({
+    title: "",
+    description: "",
+    date: "",
+    time: "",
+    venue: "",
+    event_type: "Academic",
+    custom_event_type: "", // NEW: For custom event type when "Others" is selected
+    expected_participants: 50,
+    requirements: "",
+    budget_estimate: 0,
+    request_reason: ""
+  });
+
+  // Real data from Supabase
+  const [events, setEvents] = useState<Event[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [reports, setReports] = useState<Report[]>([]);
+
+  // Load calendar events from calendar_events table
+  const loadCalendarEvents = async () => {
+    try {
+      setLoading(true);
+      console.log('Loading calendar events...');
+      
+      const { data: calendarData, error } = await supabase
+        .from('calendar_events')
+        .select('*')
+        .order('date', { ascending: true });
+      
+      if (error) {
+        console.error('Error loading calendar events:', error);
+        toast({
+          title: "Error",
+          description: "Failed to load calendar events",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      console.log('Calendar events loaded:', calendarData?.length || 0);
+      setCalendarEvents(calendarData || []);
+      
+    } catch (error) {
+      console.error('Calendar events error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Load data from Supabase
+  const loadEvents = async () => {
+    try {
+      setLoading(true);
+      
+      // FORCE FRESH DATA - no caching
+      const timestamp = Date.now();
+      
+      // Get ALL approved events (from organizers AND from approved participant requests)
+      const [{ data: organizerEvents }, { data: approvedRequests }] = await Promise.all([
+        // Original organizer events
+        supabase
+          .from('events')
+          .select(`
+            *,
+            organizer:organizer_id (name)
+          `)
+          .eq('status', 'approved')
+          .order('date', { ascending: true })
+          .range(0, 1000), // Force fresh query
+        
+        // Approved participant requests that became events - USE THIS AS MAIN SOURCE
+        supabase
+          .from('event_requests')
+          .select(`
+            *,
+            requester:requester_id (name)
+          `)
+          .eq('status', 'approved')
+          .order('date', { ascending: true })
+      ]);
+
+      console.log('Fresh events data loaded:', (organizerEvents?.length || 0), 'organizer events');
+      console.log('Fresh event requests loaded:', (approvedRequests?.length || 0), 'event requests');
+
+      if (!user?.id) {
+        setEvents([]);
+        return;
+      }
+
+      // Get user's registrations and favorites
+      let registrations = [];
+      let favorites = [];
+      
+      try {
+        const { data: regData } = await supabase
+          .from('event_registrations')
+          .select('event_id')
+          .eq('participant_id', user.id);
+        registrations = regData || [];
+      } catch (error) {
+        console.log('Event registrations table not found, creating empty array...');
+        registrations = [];
+      }
+      
+      try {
+        const { data: favData } = await supabase
+          .from('event_favorites')
+          .select('event_id')
+          .eq('user_id', user.id);
+        favorites = favData || [];
+      } catch (error) {
+        console.log('Event favorites table not found, creating empty array...');
+        favorites = [];
+      }
+
+      const registrationIds = registrations?.map(r => r.event_id) || [];
+      const favoriteIds = favorites?.map(f => f.event_id) || [];
+
+      // Format organizer events
+      const formattedOrganizerEvents: Event[] = (organizerEvents || []).map(event => ({
+        id: event.id,
+        title: event.title,
+        date: event.date,
+        time: event.time,
+        venue: event.venue,
+        organizer_name: event.organizer?.name || 'Unknown',
+        current_participants: event.current_participants || 0,
+        max_participants: event.max_participants || 100,
+        status: event.status,
+        event_type: event.event_type,
+        description: event.description || '',
+        isRegistered: registrationIds.includes(event.id),
+        isFavorite: favoriteIds.includes(event.id),
+        isMyEvent: false // These are organizer events
+      }));
+
+      // Format approved participant request events
+      const formattedRequestEvents: Event[] = (approvedRequests || []).map(request => ({
+        id: request.id, // Using request ID as event ID
+        title: request.title,
+        date: request.date,
+        time: request.time,
+        venue: request.venue,
+        organizer_name: request.requester?.name || 'Unknown',
+        current_participants: 0, // Will be updated below with actual registration count
+        max_participants: request.expected_participants || 50,
+        status: 'approved',
+        event_type: request.event_type,
+        description: request.description || '',
+        isRegistered: registrationIds.includes(request.id), // Check if registered using request.id
+        isFavorite: favoriteIds.includes(request.id),
+        isMyEvent: request.requester_id === user.id // This is their approved event
+      }));
+
+      // Combine both types
+      const allEvents = [...formattedOrganizerEvents, ...formattedRequestEvents];
+      
+      // NOW UPDATE PARTICIPANT COUNTS FOR ALL EVENTS
+      const eventsWithCounts = await Promise.all(
+        allEvents.map(async (event) => {
+          try {
+            const { count, error } = await supabase
+              .from('event_registrations')
+              .select('*', { count: 'exact', head: true })
+              .eq('event_id', event.id);
+            
+            return {
+              ...event,
+              current_participants: count || 0
+            };
+          } catch (error) {
+            console.log(`Failed to get count for event ${event.title}:`, error);
+            return {
+              ...event,
+              current_participants: 0
+            };
+          }
+        })
+      );
+      
+      console.log('Events with updated participant counts:');
+      eventsWithCounts.forEach(event => {
+        console.log(`${event.title}: ${event.current_participants}/${event.max_participants}`);
+      });
+      
+      setEvents(eventsWithCounts);
+      
+    } catch (error) {
+      console.error('Error loading events:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load events",
+        variant: "destructive"
+      });
+      setEvents([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadNotifications = async () => {
+    if (!user?.id) return;
+    
+    try {
+      const { data, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error loading notifications:', error);
+        return;
+      }
+      
+      console.log('Loaded notifications:', data);
+      setNotifications(data || []);
+    } catch (error) {
+      console.error('Error loading notifications:', error);
+    }
+  };
+
+  const loadReports = async () => {
+    if (!user?.id) return;
+    
+    try {
+      console.log('Loading reports for user:', user.id);
+      
+      // Simple query first - just get reports for this user
+      const { data, error } = await supabase
+        .from('reports')
+        .select('*')
+        .eq('reporter_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Reports query error:', error);
+        if (error.message.includes('relation "reports" does not exist')) {
+          toast({
+            title: "Database Setup Required",
+            description: "Reports table not found. Please run the database setup script first.",
+            variant: "destructive"
+          });
+          setReports([]);
+          return;
+        }
+        throw error;
+      }
+      
+      console.log('Raw reports data:', data);
+      
+      // Format reports with event titles (simple fallback)
+      const formattedReports: Report[] = (data || []).map(report => ({
+        ...report,
+        event_title: report.related_event_id ? 'Related Event' : 'General Report'
+      }));
+      
+      console.log('Formatted reports:', formattedReports);
+      setReports(formattedReports);
+    } catch (error) {
+      console.error('Error loading reports:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load reports. Please check database setup.",
+        variant: "destructive"
+      });
+      setReports([]);
+    }
+  };
+
+  const loadReportMessages = async (reportId: string) => {
+    try {
+      console.log('Loading messages for report:', reportId);
+      
+      // Simple query first
+      const { data, error } = await supabase
+        .from('report_messages')
+        .select('*')
+        .eq('report_id', reportId)
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Error loading messages:', error);
+        return;
+      }
+      
+      console.log('Raw messages data:', data);
+      
+      // Try to get sender names
+      let formattedMessages: ReportMessage[] = [];
+      
+      if (data && data.length > 0) {
+        try {
+          const senderIds = [...new Set(data.map(m => m.sender_id))];
+          const { data: users } = await supabase
+            .from('users')
+            .select('id, name, role')
+            .in('id', senderIds);
+          
+          const userMap = new Map();
+          users?.forEach(user => userMap.set(user.id, { name: user.name, role: user.role }));
+          
+          formattedMessages = data.map(msg => {
+            const userInfo = userMap.get(msg.sender_id) || { name: 'Unknown', role: 'user' };
+            return {
+              id: msg.id,
+              message: msg.message,
+              sender_id: msg.sender_id,
+              sender_name: userInfo.name,
+              sender_role: userInfo.role,
+              created_at: msg.created_at
+            };
+          });
+        } catch (userError) {
+          console.log('Could not load sender names, using fallback');
+          formattedMessages = data.map(msg => ({
+            id: msg.id,
+            message: msg.message,
+            sender_id: msg.sender_id,
+            sender_name: msg.sender_id === user?.id ? 'You' : 'Admin',
+            sender_role: msg.sender_id === user?.id ? 'participant' : 'admin',
+            created_at: msg.created_at
+          }));
+        }
+      }
+      
+      console.log('Formatted messages:', formattedMessages);
+      setReportMessages(formattedMessages);
+    } catch (error) {
+      console.error('Error loading report messages:', error);
+    }
+  };
+
+  const loadEventRequests = async () => {
+    if (!user?.id) return;
+    
+    try {
+      console.log('Loading event requests for user:', user.id);
+      
+      const { data, error } = await supabase
+        .from('event_requests')
+        .select('*')
+        .eq('requester_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Supabase error:', error);
+        throw error;
+      }
+      
+      console.log('Event requests loaded:', data);
+      setEventRequests(data || []);
+    } catch (error) {
+      console.error('Error loading event requests:', error);
+      toast({
+        title: "Info",
+        description: "No event requests found or table not created yet.",
+      });
+      setEventRequests([]);
+    }
+  };
+
+  useEffect(() => {
+    const userData = localStorage.getItem("user");
+    if (userData) {
+      const parsedUser = JSON.parse(userData);
+      setUser(parsedUser);
+      
+      // Check if user is participant
+      if (parsedUser.role !== "participant") {
+        if (parsedUser.role === "organizer") {
+          navigate("/organizer-dashboard");
+        } else {
+          navigate("/dashboard");
+        }
+      }
+    } else {
+      navigate("/login");
+    }
+  }, [navigate]);
+
+  // Load data when user is set
+  useEffect(() => {
+    if (user?.id) {
+      loadEvents();
+      loadCalendarEvents();
+      loadNotifications();
+      loadReports();
+      loadEventRequests();
+    }
+  }, [user]);
+
+  // Auto-refresh notifications when notifications tab is active
+  useEffect(() => {
+    if (activeTab === "notifications" && user?.id) {
+      loadNotifications();
+    }
+  }, [activeTab, user?.id]);
+
+  // Auto-refresh reports and messages when reports tab is active
+  useEffect(() => {
+    if (activeTab === "reports" && user?.id) {
+      loadReports();
+      // If a report is selected, also refresh its messages
+      if (selectedReport) {
+        loadReportMessages(selectedReport.id);
+      }
+    }
+  }, [activeTab, user?.id]);
+
+  // Auto-refresh messages every 5 seconds when a report is selected
+  useEffect(() => {
+    if (selectedReport && activeTab === "reports") {
+      const interval = setInterval(() => {
+        loadReportMessages(selectedReport.id);
+      }, 5000); // Refresh every 5 seconds
+
+      return () => clearInterval(interval);
+    }
+  }, [selectedReport, activeTab]);
+
+  const handleLogout = () => {
+    localStorage.removeItem("user");
+    navigate("/login");
+  };
+
+  const handleEventRegister = async (eventId: string) => {
+    if (!user?.id) return;
+    
+    try {
+      const event = events.find(e => e.id === eventId);
+      if (!event) return;
+
+      if (event.isRegistered) {
+        // Unregister
+        const result = await registrationService.unregisterFromEvent(eventId);
+        
+        if (!result.success) {
+          throw new Error(result.message);
+        }
+
+        toast({
+          title: "Unregistered",
+          description: `You have been unregistered from ${event.title}`,
+        });
+      } else {
+        // Register
+        if (event.current_participants >= event.max_participants) {
+          toast({
+            title: "Event Full",
+            description: "This event has reached maximum capacity",
+            variant: "destructive"
+          });
+          return;
+        }
+
+        const result = await registrationService.registerForEvent(eventId);
+        
+        if (!result.success) {
+          throw new Error(result.message);
+        }
+
+        // Create notification for successful registration
+        try {
+          await supabase
+            .from('notifications')
+            .insert([{
+              user_id: user.id,
+              title: "Registration Confirmed",
+              message: `Your registration for "${event.title}" has been confirmed.`,
+              type: "registration_confirmed",
+              related_event_id: eventId
+            }]);
+        } catch (notifError) {
+          console.log('Notification creation failed (non-critical):', notifError);
+        }
+
+        toast({
+          title: "Registered Successfully",
+          description: `You have been registered for ${event.title}`,
+        });
+      }
+
+      // Reload events to get updated data
+      await loadEvents();
+      await loadNotifications();
+    } catch (error) {
+      console.error('Registration error:', error);
+      toast({
+        title: "Registration Failed", 
+        description: error instanceof Error ? error.message : "Failed to update registration. Please try again.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  // Fix participant counts manually
+  const handleFixParticipantCounts = async () => {
+    try {
+      setLoading(true);
+      
+      // First, force update the counts in database
+      console.log('Forcing database count update...');
+      const { error: updateError } = await supabase.rpc('sql', {
+        query: `
+          UPDATE events 
+          SET current_participants = (
+              SELECT COUNT(*) 
+              FROM event_registrations 
+              WHERE event_id = events.id
+          );
+        `
+      });
+      
+      if (updateError) {
+        console.log('Direct SQL failed, trying function...');
+        const result = await registrationService.fixParticipantCounts();
+        
+        if (result.success) {
+          toast({
+            title: "Counts Updated",
+            description: result.message,
+          });
+        } else {
+          toast({
+            title: "Update Failed",
+            description: result.message,
+            variant: "destructive"
+          });
+        }
+      } else {
+        toast({
+          title: "Counts Updated", 
+          description: "Force updated participant counts",
+        });
+      }
+      
+      // Force reload events with fresh data
+      await loadEvents();
+    } catch (error) {
+      console.error('Fix counts error:', error);
+      toast({
+        title: "Update Failed",
+        description: "Failed to update participant counts",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggleFavorite = async (eventId: string) => {
+    if (!user?.id) return;
+    
+    try {
+      const event = events.find(e => e.id === eventId);
+      if (!event) return;
+
+      if (event.isFavorite) {
+        // Remove from favorites
+        const { error } = await supabase
+          .from('event_favorites')
+          .delete()
+          .eq('event_id', eventId)
+          .eq('user_id', user.id);
+
+        if (error) {
+          console.error('Remove favorite error:', error);
+          // Handle specific error cases
+          if (error.message.includes('relation "event_favorites" does not exist')) {
+            toast({
+              title: "Database Setup Required",
+              description: "Please run the database setup script first.",
+              variant: "destructive"
+            });
+            return;
+          }
+          throw error;
+        }
+        
+        toast({
+          title: "Removed from Favorites",
+          description: `${event.title} has been removed from your favorites.`,
+        });
+      } else {
+        // Add to favorites
+        const { error } = await supabase
+          .from('event_favorites')
+          .insert([{
+            event_id: eventId,
+            user_id: user.id
+          }]);
+
+        if (error) {
+          console.error('Add favorite error:', error);
+          // Handle specific error cases
+          if (error.message.includes('relation "event_favorites" does not exist')) {
+            toast({
+              title: "Database Setup Required",
+              description: "Please run the database setup script first.",
+              variant: "destructive"
+            });
+            return;
+          }
+          // Handle duplicate entry (409 conflict)
+          if (error.message.includes('duplicate key') || error.code === '23505') {
+            toast({
+              title: "Already in Favorites",
+              description: `${event.title} is already in your favorites.`,
+            });
+            await loadEvents(); // Refresh to sync state
+            return;
+          }
+          throw error;
+        }
+        
+        toast({
+          title: "Added to Favorites",
+          description: `${event.title} has been added to your favorites.`,
+        });
+      }
+
+      // Reload events to get updated data
+      await loadEvents();
+    } catch (error) {
+      console.error('Favorite toggle error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to update favorites. Please try again.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleMarkAsRead = async (notificationId: string) => {
+    try {
+      const { error } = await supabase
+        .from('notifications')
+        .update({ is_read: true })
+        .eq('id', notificationId);
+
+      if (error) throw error;
+
+      // Update local state
+      setNotifications(notifications.map(notification => 
+        notification.id === notificationId 
+          ? { ...notification, is_read: true }
+          : notification
+      ));
+    } catch (error) {
+      console.error('Mark as read error:', error);
+    }
+  };
+
+  const handleMarkAllAsRead = async () => {
+    if (!user?.id) return;
+    
+    try {
+      // Mark all unread notifications as read in database
+      const { error } = await supabase
+        .from('notifications')
+        .update({ is_read: true })
+        .eq('user_id', user.id)
+        .eq('is_read', false);
+
+      if (error) throw error;
+
+      // Update local state - mark all as read
+      setNotifications(notifications.map(notification => ({
+        ...notification,
+        is_read: true
+      })));
+
+      toast({
+        title: "All notifications marked as read",
+        description: "All your notifications have been marked as read.",
+      });
+    } catch (error) {
+      console.error('Mark all as read error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to mark all notifications as read.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleCreateReport = async () => {
+    if (!user?.id || !newReportTitle.trim() || !newReportDescription.trim()) {
+      toast({
+        title: "Invalid Input",
+        description: "Please fill in all required fields",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      console.log('Creating report:', {
+        reporter_id: user.id,
+        title: newReportTitle,
+        description: newReportDescription,
+        report_type: newReportType
+      });
+
+      const { data, error } = await supabase
+        .from('reports')
+        .insert([{
+          reporter_id: user.id,
+          title: newReportTitle,
+          description: newReportDescription,
+          report_type: newReportType
+        }])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Create report error:', error);
+        if (error.message.includes('relation "reports" does not exist')) {
+          toast({
+            title: "Database Setup Required",
+            description: "Reports table not found. Please run the database setup script first.",
+            variant: "destructive"
+          });
+          return;
+        }
+        throw error;
+      }
+
+      console.log('Report created successfully:', data);
+
+      // Add initial message from user
+      try {
+        await supabase
+          .from('report_messages')
+          .insert([{
+            report_id: data.id,
+            sender_id: user.id,
+            message: newReportDescription
+          }]);
+        console.log('Initial message added to report');
+      } catch (msgError) {
+        console.log('Could not add initial message (non-critical):', msgError);
+      }
+
+      toast({
+        title: "Report Submitted",
+        description: "Your report has been submitted successfully. An admin will respond soon.",
+      });
+
+      // Reset form
+      setNewReportTitle("");
+      setNewReportDescription("");
+      setShowNewReportForm(false);
+      
+      // Reload reports to show the new one
+      await loadReports();
+    } catch (error) {
+      console.error('Create report error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to submit report. Please try again.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!user?.id || !selectedReport || !newMessage.trim()) return;
+
+    try {
+      console.log('Sending message:', {
+        report_id: selectedReport.id,
+        sender_id: user.id,
+        message: newMessage
+      });
+
+      await supabase
+        .from('report_messages')
+        .insert([{
+          report_id: selectedReport.id,
+          sender_id: user.id,
+          message: newMessage
+        }]);
+
+      setNewMessage("");
+      
+      // Immediately reload messages to show the new message
+      await loadReportMessages(selectedReport.id);
+      
+      toast({
+        title: "Message Sent",
+        description: "Your message has been sent to the admin.",
+      });
+    } catch (error) {
+      console.error('Send message error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to send message. Please try again.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleSubmitOfficialEventRequest = async () => {
+    if (!user?.id || !officialEventRequest.eventRequestedBy.trim() || 
+        !officialEventRequest.eventName.trim() || !officialEventRequest.purpose.trim() ||
+        !officialEventRequest.eventDate || !officialEventRequest.venue.trim()) {
+      toast({
+        title: "Missing Information",
+        description: "Please fill in all required fields marked with *",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      setLoading(true);
+      console.log('Submitting official event request for user:', user.id);
+
+      const requestData = {
+        requester_id: user.id,
+        title: officialEventRequest.eventName,
+        description: officialEventRequest.purpose,
+        date: officialEventRequest.eventDate,
+        time: officialEventRequest.eventTime,
+        venue: officialEventRequest.venue,
+        event_type: "Official Form",
+        expected_participants: parseInt(officialEventRequest.participants) || 50,
+        requirements: `Committee: ${officialEventRequest.invitation}, ${officialEventRequest.program}`,
+        budget_estimate: 0,
+        request_reason: officialEventRequest.purpose,
+        form_data: officialEventRequest // Store complete official form
+      };
+
+      const { data, error } = await supabase
+        .from('event_requests')
+        .insert([requestData])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Supabase insert error:', error);
+        throw error;
+      }
+
+      // Create PARTICIPANT notification
+      try {
+        await supabase
+          .from('notifications')
+          .insert([{
+            user_id: user.id,
+            title: "Event Request Submitted",
+            message: `Your official event request "${officialEventRequest.eventName}" has been submitted for admin review.`,
+            type: "announcement"
+          }]);
+      } catch (notifError) {
+        console.log('Participant notification error (non-critical):', notifError);
+      }
+
+      // Create ADMIN NOTIFICATIONS - HARDCODED APPROACH
+      try {
+        console.log('🔥 PARTICIPANT: Creating admin notifications for event request...');
+        
+        // EXACT ADMIN IDs - SAME AS ORGANIZER DASHBOARD
+        const exactAdminIds = [
+          'b7cc74a6-de67-4b03-9481-f59a33a4d7f4', // reichard
+          'cdcdefb1-0cbf-44be-a8ae-5e23008878ee', // sosa  
+          '04b63328-231f-4d7b-bad0-4a18d0c0d3f5', // Admin User
+          'fde6ec11-e1ef-4663-a93b-de1e48ff2b6d', // Saiz
+          '72150cf8-b7b7-4a66-90a4-479720ceebef', // john michael
+          'fd174ebc-7386-4a25-aee5-da6741d43905'  // asdasdasdas
+        ];
+        
+        console.log('👥 PARTICIPANT: Creating notifications for', exactAdminIds.length, 'admins');
+        
+        // Create notifications for ALL admins
+        const adminNotifications = exactAdminIds.map(adminId => ({
+          user_id: adminId,
+          title: '📋 New Event Request from Participant',
+          message: `${user.name || user.email || 'Participant'} submitted event request: "${officialEventRequest.eventName}". Please review and approve.`,
+          type: 'event_request',
+          is_read: false,
+          related_event_id: data.id
+        }));
+        
+        console.log('📝 PARTICIPANT: Inserting admin notifications:', adminNotifications.length);
+        
+        const { data: createdNotifs, error: notifError } = await supabase
+          .from('notifications')
+          .insert(adminNotifications)
+          .select();
+          
+        if (notifError) {
+          console.error('❌ PARTICIPANT: Admin notification error:', notifError);
+        } else if (createdNotifs && createdNotifs.length > 0) {
+          console.log('✅ PARTICIPANT: Admin notifications created:', createdNotifs.length);
+          createdNotifs.forEach((notif, i) => {
+            console.log(`✅ [${i+1}] Admin ${notif.user_id}: "${notif.title}"`);
+          });
+        }
+        
+      } catch (adminNotifError) {
+        console.log('Admin notification error (non-critical):', adminNotifError);
+      }
+
+      toast({
+        title: "Request Submitted Successfully! 💝",
+        description: "Your event request has been submitted and is under review by administrators.",
+      });
+
+      // Reset form
+      setOfficialEventRequest({
+        eventRequestedBy: "",
+        position: "",
+        organization: "",
+        contactNumber: "",
+        email: "",
+        dateOfSubmission: new Date().toISOString().split('T')[0],
+        eventName: "",
+        purpose: "",
+        participants: "",
+        modality: "Face-to-Face",
+        eventDate: "",
+        eventTime: "",
+        venue: "",
+        overallInCharge: "",
+        invitation: "",
+        program: "",
+        soundSystem: "",
+        stageDecoration: "",
+        demolitionCleanup: "",
+        foodRefreshments: "",
+        safetySecurityUsher: "",
+        documentation: "",
+        registration: "",
+        evaluation: "",
+        letterOfRequest: false,
+        studentBoardResolution: false,
+        eventProgramInvitation: false,
+        listOfPermits: false,
+        copyOfCertificate: false,
+        postEventResult: false,
+        accomplishmentReport: false
+      });
+
+      setShowNewRequestForm(false);
+      await loadEventRequests();
+      await loadNotifications();
+      
+    } catch (error) {
+      console.error('Submit official event request error:', error);
+      toast({
+        title: "Submission Failed",
+        description: "There was an error submitting your request. Please try again.",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Generate PDF for approved requests - matches admin version
+  const generatePDF = (request: EventRequest) => {
+    let formData;
+    try {
+      formData = request.form_data || {};
+    } catch (e) {
+      formData = {};
+    }
+    
+    const printContent = `
+      <div style="max-width: 800px; margin: 0 auto; padding: 30px; font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; background: white;">
+        <!-- Form Header with Status -->
+        <div style="text-align: center; margin-bottom: 30px; position: relative;">
+          <h1 style="font-size: 28px; font-weight: bold; margin-bottom: 20px; letter-spacing: 2px;">EVENT REQUEST FORM</h1>
+          <!-- Status Stamp -->
+          <div style="position: absolute; top: 0; right: 0;">
+            <div style="display: inline-block; padding: 12px 24px; color: white; font-weight: bold; font-size: 18px; border: 3px solid ${request.status === 'approved' ? '#065f46' : request.status === 'rejected' ? '#991b1b' : '#92400e'}; background: ${request.status === 'approved' ? '#16a34a' : request.status === 'rejected' ? '#dc2626' : '#ca8a04'}; transform: rotate(12deg); border-radius: 8px; box-shadow: 2px 2px 8px rgba(0,0,0,0.3);">
+              ${request.status.toUpperCase()}
+            </div>
+          </div>
+          <p style="margin-top: 10px; color: #666; font-size: 14px;">Request ID: ${request.id}</p>
+        </div>
+
+        <!-- REQUEST DETAILS Section -->
+        <div style="margin-bottom: 30px;">
+          <h2 style="font-size: 18px; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 4px;">REQUEST DETAILS</h2>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Event Requested By:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.eventRequestedBy || ''}</span>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Position / Designation:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.position || ''}</span>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Organization / Department:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.organization || ''}</span>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Contact Number / Email:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.contactNumber || formData.email || ''}</span>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Date of Submission:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.dateOfSubmission || new Date(request.created_at).toLocaleDateString()}</span>
+          </div>
+        </div>
+
+        <!-- EVENT INFORMATION Section -->
+        <div style="margin-bottom: 30px;">
+          <h2 style="font-size: 18px; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 4px;">EVENT INFORMATION</h2>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Event Name:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${request.title}</span>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Purpose:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${request.description}</span>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Participants:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.participants || request.expected_participants}</span>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Modality: (Face-to-Face / Online / Hybrid)</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.modality || ''}</span>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 30px;">
+            <div style="display: flex; align-items: center; flex: 1;">
+              <span style="font-weight: bold; margin-right: 8px;">• Event Date:</span>
+              <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${request.date}</span>
+            </div>
+            <div style="display: flex; align-items: center; flex: 1;">
+              <span style="font-weight: bold; margin-right: 8px;">Time:</span>
+              <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${request.time}</span>
+            </div>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Venue:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${request.venue}</span>
+          </div>
+          <div style="margin-bottom: 12px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px;">• Overall In-Charge:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.overallInCharge || ''}</span>
+          </div>
+        </div>
+
+        <!-- EVENT COMMITTEE ASSIGNMENTS Section -->
+        <div style="margin-bottom: 30px;">
+          <h2 style="font-size: 18px; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 4px;">EVENT COMMITTEE ASSIGNMENTS</h2>
+          <div style="margin-bottom: 8px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px; width: 200px;">1. Invitation:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.invitation || ''}</span>
+          </div>
+          <div style="margin-bottom: 8px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px; width: 200px;">2. Program:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.program || ''}</span>
+          </div>
+          <div style="margin-bottom: 8px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px; width: 200px;">3. Sound System:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.soundSystem || ''}</span>
+          </div>
+          <div style="margin-bottom: 8px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px; width: 200px;">4. Stage Decoration:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.stageDecoration || ''}</span>
+          </div>
+          <div style="margin-bottom: 8px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px; width: 200px;">5. Demolition / Clean-Up:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.demolitionCleanup || ''}</span>
+          </div>
+          <div style="margin-bottom: 8px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px; width: 200px;">6. Food / Refreshments:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.foodRefreshments || ''}</span>
+          </div>
+          <div style="margin-bottom: 8px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px; width: 200px;">7. Safety & Security:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.safetySecurityUsher || ''}</span>
+          </div>
+          <div style="margin-bottom: 8px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px; width: 200px;">8. Documentation:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.documentation || ''}</span>
+          </div>
+          <div style="margin-bottom: 8px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px; width: 200px;">9. Registration:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.registration || ''}</span>
+          </div>
+          <div style="margin-bottom: 8px; display: flex; align-items: center;">
+            <span style="font-weight: bold; margin-right: 8px; width: 200px;">10. Evaluation:</span>
+            <span style="flex: 1; border-bottom: 1px solid #000; padding: 4px 8px; min-height: 24px;">${formData.evaluation || ''}</span>
+          </div>
+        </div>
+
+        <!-- PRE-EVENT REQUIREMENTS Section -->
+        <div style="margin-bottom: 30px;">
+          <h2 style="font-size: 18px; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 4px;">PRE-EVENT REQUIREMENTS (to be attached upon submission)</h2>
+          <div style="margin-bottom: 8px;">• Letter of Request (signed by Program Head or Dean)</div>
+          <div style="margin-bottom: 8px;">• Student Board Resolution (if the event will be held outside the school or involves a proposal for collections)</div>
+          <div style="margin-bottom: 8px;">• Event Program / Invitation</div>
+          <div style="margin-bottom: 8px;">• List of Permits Needed (if applicable)</div>
+          <div style="margin-bottom: 8px;">• Copy of Certificate (if applicable)</div>
+        </div>
+
+        <!-- POST-EVENT REQUIREMENTS Section -->
+        <div style="margin-bottom: 30px;">
+          <h2 style="font-size: 18px; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 4px;">POST-EVENT REQUIREMENTS (to be submitted within 3-5 days after the event)</h2>
+          <div style="margin-bottom: 8px;">• Post-Event Result</div>
+          <div style="margin-bottom: 8px;">• Accomplishment / Narrative Report</div>
+        </div>
+
+        <!-- IMPORTANT REMINDERS Section -->
+        <div style="margin-bottom: 30px;">
+          <h2 style="font-size: 18px; font-weight: bold; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 4px;">IMPORTANT REMINDERS:</h2>
+          <div style="margin-bottom: 8px;">• Requests must be submitted to the Office of the School Activities <strong>8 days or more before the event date</strong> to comply with the VPAA's 7-day requirement.</div>
+          <div style="margin-bottom: 8px;">• The Office of the School Activities is open <strong>Monday to Friday, 8:00 a.m. to 5:00 p.m. only</strong>.</div>
+          <div style="margin-bottom: 8px;">• Incomplete requirements will not be accepted.</div>
+        </div>
+
+        <!-- Footer -->
+        <div style="text-align: center; margin-top: 40px; font-size: 12px; color: #666;">
+          <p>Generated on: ${new Date().toLocaleDateString('en-US', { 
+            year: 'numeric', month: 'long', day: 'numeric',
+            hour: '2-digit', minute: '2-digit'
+          })}</p>
+          <p>School Event Management System - Participant Dashboard</p>
+        </div>
+      </div>
+    `;
+
+    // Create a temporary window for PDF generation
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Event Request - ${request.title}</title>
+            <style>
+              @media print {
+                body { margin: 0; }
+                .no-print { display: none; }
+              }
+            </style>
+          </head>
+          <body>
+            ${printContent}
+            <div class="no-print" style="text-align: center; margin: 20px;">
+              <button onclick="window.print(); setTimeout(() => window.close(), 1000);" style="padding: 10px 20px; background: #16a34a; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; margin-right: 10px;">Save as PDF</button>
+              <button onclick="window.close()" style="padding: 10px 20px; background: #6b7280; color: white; border: none; border-radius: 5px; cursor: pointer;">Close</button>
+            </div>
+            <script>
+              // Auto-trigger print dialog for direct PDF save
+              setTimeout(() => {
+                window.print();
+              }, 500);
+            </script>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case "approved":
+        return "bg-green-100 text-green-800";
+      case "pending":
+        return "bg-yellow-100 text-yellow-800";
+      case "rejected":
+        return "bg-red-100 text-red-800";
+      case "completed":
+        return "bg-blue-100 text-blue-800";
+      case "open":
+        return "bg-red-100 text-red-800";
+      case "in_progress":
+        return "bg-yellow-100 text-yellow-800";
+      case "resolved":
+        return "bg-green-100 text-green-800";
+      case "closed":
+        return "bg-gray-100 text-gray-800";
+      default:
+        return "bg-gray-100 text-gray-800";
+    }
+  };
+
+  const getNotificationIcon = (type: string) => {
+    switch (type) {
+      case "event_approved":
+        return <CheckCircle className="w-4 h-4 text-green-600" />;
+      case "event_rejected":
+        return <AlertCircle className="w-4 h-4 text-red-600" />;
+      case "event_reminder":
+        return <Clock className="w-4 h-4 text-blue-600" />;
+      case "registration_confirmed":
+        return <Calendar className="w-4 h-4 text-green-600" />;
+      case "announcement":
+        return <Bell className="w-4 h-4 text-purple-600" />;
+      default:
+        return <Bell className="w-4 h-4" />;
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  };
+
+  const formatDateTime = (dateString: string) => {
+    return new Date(dateString).toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const formatRelativeTime = (dateString: string) => {
+    const now = new Date();
+    const date = new Date(dateString);
+    const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+    
+    if (diffInSeconds < 60) {
+      return 'Just now';
+    } else if (diffInSeconds < 3600) {
+      const minutes = Math.floor(diffInSeconds / 60);
+      return `${minutes}m ago`;
+    } else if (diffInSeconds < 86400) {
+      const hours = Math.floor(diffInSeconds / 3600);
+      return `${hours}h ago`;
+    } else if (diffInSeconds < 604800) {
+      const days = Math.floor(diffInSeconds / 86400);
+      return `${days}d ago`;
+    } else {
+      return formatDateTime(dateString);
+    }
+  };
+
+  const filteredEvents = events.filter(event => {
+    const matchesSearch = event.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          event.description.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          event.organizer_name.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    if (filterType === "all") return matchesSearch;
+    if (filterType === "available") return matchesSearch && !event.isMyEvent; // Events by others
+    if (filterType === "myevents") return matchesSearch && event.isMyEvent; // User's approved events
+    if (filterType === "registered") return matchesSearch && event.isRegistered;
+    if (filterType === "favorites") return matchesSearch && event.isFavorite;
+    
+    return matchesSearch && event.event_type.toLowerCase() === filterType.toLowerCase();
+  });
+
+  const unreadNotifications = notifications.filter(n => !n.is_read).length;
+
+  // Calendar helper functions
+  const getFilteredCalendarEvents = () => {
+    let filtered = calendarEvents;
+
+    // Apply date filter
+    const today = new Date();
+    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    
+    if (calendarFilter === 'today') {
+      filtered = filtered.filter(event => {
+        const eventDate = new Date(event.date);
+        const eventStart = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+        return eventStart.getTime() === startOfToday.getTime();
+      });
+    } else if (calendarFilter === 'upcoming') {
+      filtered = filtered.filter(event => new Date(event.date) >= startOfToday);
+    } else if (calendarFilter === 'this_week') {
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - today.getDay());
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6);
+      filtered = filtered.filter(event => {
+        const eventDate = new Date(event.date);
+        return eventDate >= startOfWeek && eventDate <= endOfWeek;
+      });
+    } else if (calendarFilter === 'this_month') {
+      const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      filtered = filtered.filter(event => {
+        const eventDate = new Date(event.date);
+        return eventDate >= startOfMonth && eventDate <= endOfMonth;
+      });
+    }
+
+    // Apply search filter
+    if (calendarSearch.trim()) {
+      const searchLower = calendarSearch.toLowerCase();
+      filtered = filtered.filter(event => 
+        event.title?.toLowerCase().includes(searchLower) ||
+        event.description?.toLowerCase().includes(searchLower) ||
+        event.venue?.toLowerCase().includes(searchLower)
+      );
+    }
+
+    return filtered;
+  };
+
+  const getCalendarEventsByFilter = (filter: string) => {
+    const today = new Date();
+    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    
+    switch (filter) {
+      case 'today':
+        return calendarEvents.filter(event => {
+          const eventDate = new Date(event.date);
+          const eventStart = new Date(eventDate.getFullYear(), eventDate.getMonth(), eventDate.getDate());
+          return eventStart.getTime() === startOfToday.getTime();
+        });
+      case 'upcoming':
+        return calendarEvents.filter(event => new Date(event.date) >= startOfToday);
+      case 'this_week':
+        const startOfWeek = new Date(today);
+        startOfWeek.setDate(today.getDate() - today.getDay());
+        const endOfWeek = new Date(startOfWeek);
+        endOfWeek.setDate(startOfWeek.getDate() + 6);
+        return calendarEvents.filter(event => {
+          const eventDate = new Date(event.date);
+          return eventDate >= startOfWeek && eventDate <= endOfWeek;
+        });
+      case 'this_month':
+        const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+        const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        return calendarEvents.filter(event => {
+          const eventDate = new Date(event.date);
+          return eventDate >= startOfMonth && eventDate <= endOfMonth;
+        });
+      default:
+        return calendarEvents;
+    }
+  };
+
+  // Events tab helper functions
+  const getFilteredEvents = () => {
+    let filtered = events;
+
+    // Apply filter
+    if (eventsFilter === 'my_events') {
+      filtered = filtered.filter(event => event.isMyEvent);
+    } else if (eventsFilter === 'registered') {
+      filtered = filtered.filter(event => event.isRegistered);
+    }
+
+    // Apply search
+    if (eventsSearch.trim()) {
+      const searchLower = eventsSearch.toLowerCase();
+      filtered = filtered.filter(event => 
+        event.title.toLowerCase().includes(searchLower) ||
+        event.organizer_name.toLowerCase().includes(searchLower) ||
+        event.venue.toLowerCase().includes(searchLower) ||
+        (event.description && event.description.toLowerCase().includes(searchLower))
+      );
+    }
+
+    return filtered;
+  };
+
+  if (!user) {
+    return <div>Loading...</div>;
+  }
+
+  return (
+    <div className="flex h-screen bg-white">
+      <Sidebar 
+        collapsed={sidebarCollapsed} 
+        onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+      />
+      
+      <div className="flex-1 overflow-auto">
+        {/* Header */}
+        <header className="bg-white border-b border-border p-6">
+          <div className="flex items-center justify-between">
+            <img src={logo} alt="Logo" className="w-12 h-12 object-contain rounded-xl shadow" />
+            <div>
+              <h1 className="text-3xl font-bold text-foreground">
+                Welcome back, {user?.name || "Participant"}!
+              </h1>
+              <p className="text-muted-foreground mt-1">
+                Here's what's happening with your school events today.
+              </p>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <User className="w-4 h-4" />
+              <span className="text-sm font-medium">{user.name}</span>
+              <Badge variant="secondary">Participant</Badge>
+            </div>
+          </div>
+        </header>
+
+        {/* Main Content */}
+        <main className="p-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+          {/* Hide TabsList since navigation is now handled by sidebar */}
+          <div className="hidden">
+            <TabsList className="grid w-full grid-cols-7 bg-white/50 backdrop-blur-sm">
+              <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
+              <TabsTrigger value="calendar">Calendar</TabsTrigger>
+              <TabsTrigger value="events">Events</TabsTrigger>
+              <TabsTrigger value="multimedia">Multimedia</TabsTrigger>
+              <TabsTrigger value="program">Program Flow</TabsTrigger>
+              <TabsTrigger value="notifications">Notifications</TabsTrigger>
+              <TabsTrigger value="reports">Reports</TabsTrigger>
+            </TabsList>
+          </div>
+
+          {/* Dashboard Tab */}
+          <TabsContent value="dashboard" className="space-y-6">
+            {/* Welcome Section */}
+            <Card className="card-elevated">
+              <CardContent className="p-6">
+                <div className="text-center space-y-4">
+                  <div className="w-20 h-20 mx-auto bg-gradient-to-r from-blue-500 to-violet-500 rounded-full flex items-center justify-center">
+                    <User className="w-10 h-10 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-2xl font-bold text-foreground">Welcome, {user?.name}!</h2>
+                    <p className="text-muted-foreground">Participant Dashboard</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Quick Stats */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <Card className="card-elevated">
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">Available Events</p>
+                      <p className="text-3xl font-bold gradient-primary bg-clip-text text-transparent">
+                        {events.filter(e => !e.isMyEvent).length}
+                      </p>
+                    </div>
+                    <CalendarDays className="w-8 h-8 text-primary" />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="card-elevated">
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">My Events</p>
+                      <p className="text-3xl font-bold text-green-600">
+                        {events.filter(e => e.isMyEvent).length}
+                      </p>
+                    </div>
+                    <CheckCircle className="w-8 h-8 text-green-600" />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="card-elevated">
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">Registered</p>
+                      <p className="text-3xl font-bold text-blue-600">
+                        {events.filter(e => e.isRegistered).length}
+                      </p>
+                    </div>
+                    <Users className="w-8 h-8 text-blue-600" />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="card-elevated">
+                <CardContent className="p-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-muted-foreground">Event Requests</p>
+                      <p className="text-3xl font-bold text-purple-600">
+                        {eventRequests.length}
+                      </p>
+                    </div>
+                    <Plus className="w-8 h-8 text-purple-600" />
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Quick Actions */}
+            <Card className="card-elevated">
+              <CardHeader>
+                <CardTitle>Quick Actions</CardTitle>
+                <CardDescription>Frequently used actions</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <Button 
+                    className="h-20 flex-col space-y-2 bg-gradient-to-r from-blue-500 to-violet-500 hover:from-blue-600 hover:to-violet-600"
+                    onClick={() => setActiveTab("events")}
+                  >
+                    <Plus className="w-6 h-6" />
+                    <span>Request Event</span>
+                  </Button>
+                  
+                  <Button 
+                    variant="outline"
+                    className="h-20 flex-col space-y-2"
+                    onClick={() => setActiveTab("calendar")}
+                  >
+                    <Calendar className="w-6 h-6" />
+                    <span>View Calendar</span>
+                  </Button>
+                  
+                  <Button 
+                    variant="outline"
+                    className="h-20 flex-col space-y-2 relative"
+                    onClick={() => setActiveTab("notifications")}
+                  >
+                    <Bell className="w-6 h-6" />
+                    <span>Notifications</span>
+                    {unreadNotifications > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                        {unreadNotifications}
+                      </span>
+                    )}
+                  </Button>
+                  
+                  <Button 
+                    variant="outline"
+                    className="h-20 flex-col space-y-2"
+                    onClick={() => setActiveTab("reports")}
+                  >
+                    <FileText className="w-6 h-6" />
+                    <span>Reports</span>
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Recent Activity */}
+            <Card className="card-elevated">
+              <CardHeader>
+                <CardTitle>Recent Activity</CardTitle>
+                <CardDescription>Your latest events and notifications</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {notifications.slice(0, 5).map((notification) => (
+                    <div key={notification.id} className="flex items-center space-x-3 p-3 bg-muted/50 rounded-lg">
+                      <div className="p-2 rounded-full bg-primary/10">
+                        {getNotificationIcon(notification.type)}
+                      </div>
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">{notification.title}</p>
+                        <p className="text-xs text-muted-foreground">{formatDate(notification.created_at)}</p>
+                      </div>
+                      {!notification.is_read && (
+                        <div className="w-2 h-2 bg-primary rounded-full"></div>
+                      )}
+                    </div>
+                  ))}
+                  {notifications.length === 0 && (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <Bell className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                      <p>No recent activity</p>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Calendar Tab - Calendar View from calendar_events */}
+          <TabsContent value="calendar" className="space-y-6">
+            {/* Header with Search and Filter */}
+            <Card className="card-elevated">
+              <CardHeader>
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Calendar className="w-5 h-5" />
+                      Calendar of Events
+                    </CardTitle>
+                    <CardDescription>View all scheduled events in calendar format</CardDescription>
+                  </div>
+                </div>
+                
+                {/* Search and Filter Bar */}
+                <div className="flex flex-col sm:flex-row gap-4 mt-4 pt-4 border-t">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
+                    <Input
+                      placeholder="Search calendar events..."
+                      value={calendarSearch}
+                      onChange={(e) => setCalendarSearch(e.target.value)}
+                      className="pl-10"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Filter className="w-4 h-4 text-muted-foreground" />
+                    <select
+                      value={calendarFilter}
+                      onChange={(e) => setCalendarFilter(e.target.value as any)}
+                      className="px-3 py-2 border border-input bg-background rounded-md"
+                    >
+                      <option value="all">All Events</option>
+                      <option value="today">Today</option>
+                      <option value="upcoming">Upcoming</option>
+                      <option value="this_week">This Week</option>
+                      <option value="this_month">This Month</option>
+                    </select>
+                  </div>
+                </div>
+              </CardHeader>
+            </Card>
+
+            {/* Statistics Cards - Clickable Filters */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <Card 
+                className={`card-elevated cursor-pointer transition-all hover:scale-105 hover:shadow-lg ${
+                  calendarFilter === 'all' ? 'ring-2 ring-blue-500 bg-blue-50' : ''
+                }`}
+                onClick={() => {
+                  setCalendarFilter('all');
+                  setCalendarSearch('');
+                }}
+              >
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-blue-100 rounded-lg">
+                      <Calendar className="w-5 h-5 text-blue-600" />
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold">{calendarEvents.length}</p>
+                      <p className="text-sm text-muted-foreground">Total Events</p>
+                    </div>
+                  </div>
+                  {calendarFilter === 'all' && (
+                    <div className="mt-2 text-xs text-blue-600 font-medium">
+                      ✓ Currently viewing all
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+              
+              <Card 
+                className={`card-elevated cursor-pointer transition-all hover:scale-105 hover:shadow-lg ${
+                  calendarFilter === 'today' ? 'ring-2 ring-green-500 bg-green-50' : ''
+                }`}
+                onClick={() => {
+                  setCalendarFilter('today');
+                  setCalendarSearch('');
+                }}
+              >
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-green-100 rounded-lg">
+                      <CalendarDays className="w-5 h-5 text-green-600" />
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold">{getCalendarEventsByFilter('today').length}</p>
+                      <p className="text-sm text-muted-foreground">Today</p>
+                    </div>
+                  </div>
+                  {calendarFilter === 'today' && (
+                    <div className="mt-2 text-xs text-green-600 font-medium">
+                      ✓ Currently viewing today
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+              
+              <Card 
+                className={`card-elevated cursor-pointer transition-all hover:scale-105 hover:shadow-lg ${
+                  calendarFilter === 'this_week' ? 'ring-2 ring-purple-500 bg-purple-50' : ''
+                }`}
+                onClick={() => {
+                  setCalendarFilter('this_week');
+                  setCalendarSearch('');
+                }}
+              >
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-purple-100 rounded-lg">
+                      <Clock className="w-5 h-5 text-purple-600" />
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold">{getCalendarEventsByFilter('this_week').length}</p>
+                      <p className="text-sm text-muted-foreground">This Week</p>
+                    </div>
+                  </div>
+                  {calendarFilter === 'this_week' && (
+                    <div className="mt-2 text-xs text-purple-600 font-medium">
+                      ✓ Currently viewing week
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+              
+              <Card 
+                className={`card-elevated cursor-pointer transition-all hover:scale-105 hover:shadow-lg ${
+                  calendarFilter === 'upcoming' ? 'ring-2 ring-orange-500 bg-orange-50' : ''
+                }`}
+                onClick={() => {
+                  setCalendarFilter('upcoming');
+                  setCalendarSearch('');
+                }}
+              >
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-orange-100 rounded-lg">
+                      <TrendingUp className="w-5 h-5 text-orange-600" />
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold">{getCalendarEventsByFilter('upcoming').length}</p>
+                      <p className="text-sm text-muted-foreground">Upcoming</p>
+                    </div>
+                  </div>
+                  {calendarFilter === 'upcoming' && (
+                    <div className="mt-2 text-xs text-orange-600 font-medium">
+                      ✓ Currently viewing upcoming
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Literal Calendar Grid Display */}
+            <Card className="card-elevated">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold">
+                    {selectedDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => {
+                        const prevMonth = new Date(selectedDate);
+                        prevMonth.setMonth(prevMonth.getMonth() - 1);
+                        setSelectedDate(prevMonth);
+                      }}
+                    >
+                      ←
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => setSelectedDate(new Date())}
+                    >
+                      Today
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => {
+                        const nextMonth = new Date(selectedDate);
+                        nextMonth.setMonth(nextMonth.getMonth() + 1);
+                        setSelectedDate(nextMonth);
+                      }}
+                    >
+                      →
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {/* Calendar Grid */}
+                <div className="grid grid-cols-7 gap-1 mb-4">
+                  {/* Header row */}
+                  {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+                    <div key={day} className="p-2 text-center text-sm font-semibold text-muted-foreground">
+                      {day}
+                    </div>
+                  ))}
+                  
+                  {/* Calendar cells */}
+                  {(() => {
+                    const year = selectedDate.getFullYear();
+                    const month = selectedDate.getMonth();
+                    const firstDay = new Date(year, month, 1);
+                    const lastDay = new Date(year, month + 1, 0);
+                    const startDate = new Date(firstDay);
+                    startDate.setDate(startDate.getDate() - firstDay.getDay());
+                    
+                    const cells = [];
+                    for (let i = 0; i < 42; i++) {
+                      const currentDate = new Date(startDate);
+                      currentDate.setDate(startDate.getDate() + i);
+                      
+                      const isCurrentMonth = currentDate.getMonth() === month;
+                      const isToday = currentDate.toDateString() === new Date().toDateString();
+                      
+                      // Get events for this date (from both calendar_events and regular events)
+                      const dateString = currentDate.toISOString().split('T')[0];
+                      const dayEvents = [
+                        ...calendarEvents.filter(event => event.date?.split('T')[0] === dateString),
+                        ...events.filter(event => event.date?.split('T')[0] === dateString)
+                      ];
+                      
+                      cells.push(
+                        <div
+                          key={i}
+                          className={`min-h-[100px] p-1 border border-gray-200 ${
+                            isCurrentMonth ? 'bg-white' : 'bg-gray-50'
+                          } ${isToday ? 'bg-blue-50 border-blue-300' : ''}`}
+                        >
+                          <div className={`text-sm font-medium mb-1 ${
+                            isCurrentMonth ? 'text-gray-900' : 'text-gray-400'
+                          } ${isToday ? 'text-blue-600' : ''}`}>
+                            {currentDate.getDate()}
+                          </div>
+                          
+                          {/* Events for this date */}
+                          <div className="space-y-1">
+                            {dayEvents.slice(0, 3).map((event, idx) => (
+                              <div
+                                key={idx}
+                                className="text-xs p-1 rounded text-white bg-blue-500 truncate cursor-pointer hover:bg-blue-600"
+                                onClick={() => {
+                                  setSelectedEvent(event);
+                                  setShowEventDetails(true);
+                                }}
+                                title={event.title}
+                              >
+                                {event.time && (
+                                  <span className="font-mono">{event.time.slice(0, 5)} </span>
+                                )}
+                                {event.title}
+                              </div>
+                            ))}
+                            {dayEvents.length > 3 && (
+                              <div className="text-xs text-gray-500 text-center">
+                                +{dayEvents.length - 3} more
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    }
+                    return cells;
+                  })()}
+                </div>
+                
+                {/* Calendar Legend */}
+                <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-blue-500 rounded"></div>
+                    <span>Events</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 bg-blue-100 border border-blue-300 rounded"></div>
+                    <span>Today</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Events Tab - Organized Event Management */}
+          <TabsContent value="events" className="space-y-6">
+            {/* Header with Search and Filter */}
+            <Card className="card-elevated">
+              <CardHeader>
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Activity className="w-5 h-5" />
+                      Event Management
+                    </CardTitle>
+                    <CardDescription>View and manage your events, registrations, and requests</CardDescription>
+                  </div>
+                  <Button 
+                    className="gradient-primary"
+                    onClick={() => setShowNewRequestForm(true)}
+                    disabled={showNewRequestForm}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Request New Event
+                  </Button>
+                </div>
+                
+                {/* Search and Filter Bar */}
+                <div className="flex flex-col sm:flex-row gap-4 mt-4 pt-4 border-t">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground w-4 h-4" />
+                    <Input
+                      placeholder="Search events by title, organizer, or venue..."
+                      value={eventsSearch}
+                      onChange={(e) => setEventsSearch(e.target.value)}
+                      className="pl-10"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Filter className="w-4 h-4 text-muted-foreground" />
+                    <select
+                      value={eventsFilter}
+                      onChange={(e) => setEventsFilter(e.target.value as any)}
+                      className="px-3 py-2 border border-input bg-background rounded-md"
+                    >
+                      <option value="all">All Events</option>
+                      <option value="my_events">My Events</option>
+                      <option value="registered">Registered Events</option>
+                    </select>
+                  </div>
+                </div>
+              </CardHeader>
+            </Card>
+
+            {/* Statistics Cards - Clickable Filters */}
+            <div className="grid grid-cols-3 gap-4">
+              <Card 
+                className={`card-elevated cursor-pointer transition-all hover:scale-105 hover:shadow-lg ${
+                  eventsFilter === 'all' ? 'ring-2 ring-blue-500 bg-blue-50' : ''
+                }`}
+                onClick={() => {
+                  setEventsFilter('all');
+                  setEventsSearch('');
+                }}
+              >
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-blue-100 rounded-lg">
+                      <Activity className="w-5 h-5 text-blue-600" />
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold">{events.length}</p>
+                      <p className="text-sm text-muted-foreground">All Events</p>
+                    </div>
+                  </div>
+                  {eventsFilter === 'all' && (
+                    <div className="mt-2 text-xs text-blue-600 font-medium">
+                      ✓ Currently viewing all
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+              
+              <Card 
+                className={`card-elevated cursor-pointer transition-all hover:scale-105 hover:shadow-lg ${
+                  eventsFilter === 'my_events' ? 'ring-2 ring-green-500 bg-green-50' : ''
+                }`}
+                onClick={() => {
+                  setEventsFilter('my_events');
+                  setEventsSearch('');
+                }}
+              >
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-green-100 rounded-lg">
+                      <CheckCircle className="w-5 h-5 text-green-600" />
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold">{events.filter(e => e.isMyEvent).length}</p>
+                      <p className="text-sm text-muted-foreground">My Events</p>
+                    </div>
+                  </div>
+                  {eventsFilter === 'my_events' && (
+                    <div className="mt-2 text-xs text-green-600 font-medium">
+                      ✓ Currently viewing my events
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+              
+              <Card 
+                className={`card-elevated cursor-pointer transition-all hover:scale-105 hover:shadow-lg ${
+                  eventsFilter === 'registered' ? 'ring-2 ring-purple-500 bg-purple-50' : ''
+                }`}
+                onClick={() => {
+                  setEventsFilter('registered');
+                  setEventsSearch('');
+                }}
+              >
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-purple-100 rounded-lg">
+                      <Users className="w-5 h-5 text-purple-600" />
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold">{events.filter(e => e.isRegistered).length}</p>
+                      <p className="text-sm text-muted-foreground">Registered</p>
+                    </div>
+                  </div>
+                  {eventsFilter === 'registered' && (
+                    <div className="mt-2 text-xs text-purple-600 font-medium">
+                      ✓ Currently viewing registered
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Filtered Events Display */}
+            <div className="space-y-6">
+              {getFilteredEvents().length === 0 ? (
+                <Card className="card-elevated">
+                  <CardContent className="flex flex-col items-center justify-center py-12">
+                    <Activity className="w-16 h-16 text-muted-foreground mb-4" />
+                    <h3 className="text-lg font-semibold text-muted-foreground mb-2">
+                      {eventsFilter === 'all' ? 'No Events Available' :
+                       eventsFilter === 'my_events' ? 'No Events Created' :
+                       'No Registered Events'}
+                    </h3>
+                    <p className="text-muted-foreground text-center mb-4">
+                      {eventsFilter === 'all' ? 'There are currently no events available.' :
+                       eventsFilter === 'my_events' ? 'You haven\'t created any events yet.' :
+                       'You haven\'t registered for any events yet.'}
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {getFilteredEvents().map((event) => (
+                    <Card key={event.id} className="card-elevated overflow-hidden hover:shadow-lg transition-shadow">
+                      <CardContent className="p-0">
+                        {/* Event Header */}
+                        <div className="relative p-6 pb-4">
+                          <div className="flex items-start justify-between mb-4">
+                            <div className="flex items-center space-x-2">
+                              <Badge className={getStatusColor(event.status)}>
+                                {event.status}
+                              </Badge>
+                              {event.isMyEvent && (
+                                <Badge variant="secondary" className="bg-green-100 text-green-800">
+                                  My Event
+                                </Badge>
+                              )}
+                              {event.isRegistered && (
+                                <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+                                  Registered
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                          
+                          <h3 
+                            className="font-bold text-lg mb-2 cursor-pointer hover:text-primary"
+                            onClick={() => {
+                              setSelectedEvent(event);
+                              setShowEventDetails(true);
+                            }}
+                          >
+                            {event.title}
+                          </h3>
+                          <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
+                            {event.description}
+                          </p>
+                          
+                          <div className="space-y-2 text-sm">
+                            <div className="flex items-center space-x-2">
+                              <Calendar className="w-4 h-4 text-muted-foreground" />
+                              <span>{formatDate(event.date)} at {event.time}</span>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <MapPin className="w-4 h-4 text-muted-foreground" />
+                              <span>{event.venue}</span>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <User className="w-4 h-4 text-muted-foreground" />
+                              <span>{event.organizer_name}</span>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <Users className="w-4 h-4 text-muted-foreground" />
+                              <span>{event.current_participants}/{event.max_participants} participants</span>
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Event Actions */}
+                        <div className="border-t p-4 bg-muted/20">
+                          <div className="flex items-center space-x-2">
+                            {!event.isRegistered ? (
+                              <Button
+                                variant="default"
+                                size="sm"
+                                onClick={() => handleEventRegister(event.id)}
+                                className="flex-1"
+                                disabled={loading || event.status === "completed" || event.current_participants >= event.max_participants}
+                              >
+                                {loading ? "Registering..." : "Register"}
+                              </Button>
+                            ) : (
+                              <div className="flex gap-2 w-full">
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => handleEventRegister(event.id)}
+                                  className="flex-1"
+                                  disabled={loading}
+                                >
+                                  {loading ? "Loading..." : "Unregister"}
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    // Convert Event to EventRequest format for PDF generation
+                                    const eventRequest = {
+                                      id: event.id,
+                                      title: event.title,
+                                      description: event.description,
+                                      date: event.date,
+                                      time: event.time,
+                                      venue: event.venue,
+                                      event_type: event.event_type,
+                                      expected_participants: event.max_participants,
+                                      request_reason: '',
+                                      status: event.status,
+                                      created_at: new Date().toISOString(),
+                                      form_data: {}
+                                    };
+                                    generatePDF(eventRequest);
+                                  }}
+                                  title="Download Event Certificate/Details"
+                                >
+                                  <Download className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Event Request Form */}
+            {showNewRequestForm && (
+              <Card className="card-elevated border-2 border-primary/20 bg-primary/5">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-primary">EVENT REQUEST FORM</CardTitle>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => setShowNewRequestForm(false)}
+                    >
+                      ✕ Close
+                    </Button>
+                  </div>
+                  <CardDescription>Complete all required fields to submit your event request</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="event-name">Event Name *</Label>
+                      <Input
+                        id="event-name"
+                        value={officialEventRequest.eventName}
+                        onChange={(e) => setOfficialEventRequest({...officialEventRequest, eventName: e.target.value})}
+                        placeholder="Name of your event"
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="event-date">Event Date *</Label>
+                      <Input
+                        id="event-date"
+                        type="date"
+                        value={officialEventRequest.eventDate}
+                        onChange={(e) => setOfficialEventRequest({...officialEventRequest, eventDate: e.target.value})}
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="event-time">Event Time *</Label>
+                      <Input
+                        id="event-time"
+                        type="time"
+                        value={officialEventRequest.eventTime}
+                        onChange={(e) => setOfficialEventRequest({...officialEventRequest, eventTime: e.target.value})}
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="venue">Venue *</Label>
+                      <Input
+                        id="venue"
+                        value={officialEventRequest.venue}
+                        onChange={(e) => setOfficialEventRequest({...officialEventRequest, venue: e.target.value})}
+                        placeholder="Event venue"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label htmlFor="purpose">Purpose/Description *</Label>
+                    <Textarea
+                      id="purpose"
+                      value={officialEventRequest.purpose}
+                      onChange={(e) => setOfficialEventRequest({...officialEventRequest, purpose: e.target.value})}
+                      placeholder="Describe the purpose and details of your event"
+                      rows={3}
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button 
+                      variant="outline"
+                      onClick={() => setShowNewRequestForm(false)}
+                    >
+                      Cancel
+                    </Button>
+                    <Button 
+                      onClick={handleSubmitOfficialEventRequest}
+                      disabled={loading}
+                      className="gradient-primary"
+                    >
+                      {loading ? "Submitting..." : "Submit Request"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* Multimedia Tab */}
+          <TabsContent value="multimedia" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <CardTitle>Multimedia Gallery</CardTitle>
+                <CardDescription>View event photos, videos and multimedia content</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="text-center py-12">
+                  <Camera className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+                  <h3 className="text-lg font-medium mb-2 text-muted-foreground">Multimedia Gallery</h3>
+                  <p className="text-muted-foreground mb-4">
+                    This feature is under development. You'll be able to view event photos and videos here.
+                  </p>
+                  <Button variant="outline" disabled>
+                    Coming Soon
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Program Flow Tab */}
+          <TabsContent value="program" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <CardTitle>Program Flow Management</CardTitle>
+                <CardDescription>Event program flow management (Coming Soon)</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="text-center py-12">
+                  <Workflow className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+                  <h3 className="text-lg font-medium mb-2 text-muted-foreground">Program Flow Management</h3>
+                  <p className="text-muted-foreground mb-4">
+                    This feature is under development. You'll be able to manage event program flows here.
+                  </p>
+                  <Button variant="outline" disabled>
+                    Coming Soon
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Notifications Tab */}
+          <TabsContent value="notifications" className="space-y-6">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-bold">Notifications</h2>
+                <p className="text-muted-foreground">Stay updated with your events and announcements</p>
+              </div>
+              {unreadNotifications > 0 && (
+                <Button onClick={handleMarkAllAsRead} variant="outline" size="sm">
+                  Mark All as Read ({unreadNotifications})
+                </Button>
+              )}
+            </div>
+
+            {notifications.length === 0 ? (
+              <Card className="card-elevated">
+                <CardContent className="flex flex-col items-center justify-center py-12">
+                  <Bell className="w-16 h-16 text-muted-foreground mb-4" />
+                  <h3 className="text-lg font-semibold text-muted-foreground mb-2">No Notifications</h3>
+                  <p className="text-muted-foreground text-center">
+                    You'll receive notifications here when there are updates about your events.
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="space-y-4">
+                {notifications.map((notification) => (
+                  <Card 
+                    key={notification.id} 
+                    className={`card-elevated transition-all hover:shadow-md ${
+                      !notification.is_read ? 'border-l-4 border-l-primary bg-primary/5' : ''
+                    }`}
+                  >
+                    <CardContent className="p-6">
+                      <div className="flex items-start space-x-4">
+                        <div className="p-2 rounded-full bg-muted">
+                          {getNotificationIcon(notification.type)}
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-start justify-between">
+                            <div className="space-y-1">
+                              <h4 className="font-semibold text-foreground">
+                                {notification.title}
+                                {!notification.is_read && (
+                                  <span className="ml-2 w-2 h-2 bg-primary rounded-full inline-block"></span>
+                                )}
+                              </h4>
+                              <p className="text-sm text-muted-foreground">
+                                {notification.message}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {formatRelativeTime(notification.created_at)}
+                              </p>
+                            </div>
+                            {!notification.is_read && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleMarkAsRead(notification.id)}
+                              >
+                                Mark as Read
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          {/* Reports Tab - Chat and Problem Reporting */}
+          <TabsContent value="reports" className="space-y-6">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-2xl font-bold">Reports & Support</h2>
+                <p className="text-muted-foreground">Submit issues and communicate with administrators</p>
+              </div>
+              <Button 
+                onClick={() => setShowNewReportForm(true)} 
+                className="gradient-primary"
+                disabled={showNewReportForm}
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                New Report
+              </Button>
+            </div>
+
+            {/* New Report Form */}
+            {showNewReportForm && (
+              <Card className="card-elevated border-2 border-primary/20 bg-primary/5">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-primary">Submit New Report</CardTitle>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => setShowNewReportForm(false)}
+                    >
+                      ✕ Close
+                    </Button>
+                  </div>
+                  <CardDescription>Describe your issue or feedback</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <Label htmlFor="report-type">Report Type</Label>
+                    <Select value={newReportType} onValueChange={(value: any) => setNewReportType(value)}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="rejection_complaint">Event Rejection Complaint</SelectItem>
+                        <SelectItem value="technical_issue">Technical Issue</SelectItem>
+                        <SelectItem value="general_inquiry">General Inquiry</SelectItem>
+                        <SelectItem value="event_feedback">Event Feedback</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label htmlFor="report-title">Title</Label>
+                    <Input
+                      id="report-title"
+                      value={newReportTitle}
+                      onChange={(e) => setNewReportTitle(e.target.value)}
+                      placeholder="Brief title for your report"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="report-description">Description</Label>
+                    <Textarea
+                      id="report-description"
+                      value={newReportDescription}
+                      onChange={(e) => setNewReportDescription(e.target.value)}
+                      placeholder="Describe your issue or feedback in detail"
+                      rows={4}
+                    />
+                  </div>
+                  <div className="flex justify-end space-x-2">
+                    <Button variant="outline" onClick={() => setShowNewReportForm(false)}>
+                      Cancel
+                    </Button>
+                    <Button onClick={handleCreateReport} className="gradient-primary">
+                      Submit Report
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Reports List */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Reports List */}
+              <div className="space-y-4">
+                <h3 className="font-semibold">Your Reports</h3>
+                {reports.length === 0 ? (
+                  <Card className="card-elevated">
+                    <CardContent className="flex flex-col items-center justify-center py-8">
+                      <FileText className="w-12 h-12 text-muted-foreground mb-4" />
+                      <p className="text-muted-foreground text-center">No reports submitted yet</p>
+                      <Button 
+                        variant="outline" 
+                        className="mt-4"
+                        onClick={() => setShowNewReportForm(true)}
+                      >
+                        Submit Your First Report
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <div className="space-y-3">
+                    {reports.map((report) => (
+                      <Card 
+                        key={report.id} 
+                        className={`card-elevated cursor-pointer transition-all hover:shadow-md ${
+                          selectedReport?.id === report.id ? 'ring-2 ring-primary bg-primary/5' : ''
+                        }`}
+                        onClick={() => {
+                          setSelectedReport(report);
+                          loadReportMessages(report.id);
+                        }}
+                      >
+                        <CardContent className="p-4">
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="font-medium text-sm">{report.title}</h4>
+                            <Badge className={getStatusColor(report.status)}>
+                              {report.status}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground mb-2 line-clamp-2">
+                            {report.description}
+                          </p>
+                          <div className="flex items-center justify-between text-xs text-muted-foreground">
+                            <span>{report.report_type.replace('_', ' ')}</span>
+                            <span>{formatDate(report.created_at)}</span>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Chat Interface */}
+              <div className="space-y-4">
+                <h3 className="font-semibold">
+                  {selectedReport ? `Chat: ${selectedReport.title}` : 'Select a Report'}
+                </h3>
+                
+                {selectedReport ? (
+                  <Card className="card-elevated h-96 flex flex-col">
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <CardTitle className="text-sm">{selectedReport.title}</CardTitle>
+                          <CardDescription className="text-xs">
+                            Status: <Badge className={getStatusColor(selectedReport.status)} variant="secondary">
+                              {selectedReport.status}
+                            </Badge>
+                          </CardDescription>
+                        </div>
+                      </div>
+                    </CardHeader>
+                    
+                    {/* Messages Area */}
+                    <CardContent className="flex-1 overflow-y-auto">
+                      <div className="space-y-3">
+                        {reportMessages.map((message) => (
+                          <div 
+                            key={message.id}
+                            className={`flex ${message.sender_id === user?.id ? 'justify-end' : 'justify-start'}`}
+                          >
+                            <div className={`max-w-[80%] p-3 rounded-lg ${
+                              message.sender_id === user?.id 
+                                ? 'bg-primary text-primary-foreground' 
+                                : 'bg-muted'
+                            }`}>
+                              <p className="text-sm">{message.message}</p>
+                              <div className="flex items-center justify-between mt-1">
+                                <span className="text-xs opacity-70">
+                                  {message.sender_name}
+                                </span>
+                                <span className="text-xs opacity-70">
+                                  {formatRelativeTime(message.created_at)}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                        
+                        {reportMessages.length === 0 && (
+                          <div className="text-center py-8 text-muted-foreground">
+                            <p className="text-sm">No messages yet. Start the conversation!</p>
+                          </div>
+                        )}
+                      </div>
+                    </CardContent>
+                    
+                    {/* Message Input */}
+                    <div className="p-4 border-t">
+                      <div className="flex space-x-2">
+                        <Input
+                          value={newMessage}
+                          onChange={(e) => setNewMessage(e.target.value)}
+                          placeholder="Type your message..."
+                          onKeyPress={(e) => {
+                            if (e.key === 'Enter') {
+                              handleSendMessage();
+                            }
+                          }}
+                        />
+                        <Button 
+                          onClick={handleSendMessage}
+                          disabled={!newMessage.trim()}
+                          size="sm"
+                        >
+                          <Send className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </Card>
+                ) : (
+                  <Card className="card-elevated h-96 flex items-center justify-center">
+                    <CardContent>
+                      <div className="text-center text-muted-foreground">
+                        <FileText className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                        <p>Select a report to view the conversation</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
+            </div>
+          </TabsContent>
+        </Tabs>
+        </main>
+      </div>
+      
+      {/* Event Details Modal */}
+      {showEventDetails && selectedEvent && (
+                            <Input
+                              id="requested-by"
+                              value={officialEventRequest.eventRequestedBy}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, eventRequestedBy: e.target.value})}
+                              placeholder="Your full name"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="position">• Position / Designation: *</Label>
+                            <Input
+                              id="position"
+                              value={officialEventRequest.position}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, position: e.target.value})}
+                              placeholder="Your position or title"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="organization">• Organization / Department: *</Label>
+                            <Input
+                              id="organization"
+                              value={officialEventRequest.organization}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, organization: e.target.value})}
+                              placeholder="Your organization or department"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="contact">• Contact Number / Email: *</Label>
+                            <Input
+                              id="contact"
+                              value={officialEventRequest.contactNumber}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, contactNumber: e.target.value})}
+                              placeholder="Phone number or email"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="submission-date">• Date of Submission:</Label>
+                            <Input
+                              id="submission-date"
+                              type="date"
+                              value={officialEventRequest.dateOfSubmission}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, dateOfSubmission: e.target.value})}
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <Card className="w-full max-w-2xl max-h-[80vh] overflow-y-auto m-4">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle>{selectedEvent.title}</CardTitle>
+                <Button 
+                  variant="ghost" 
+                  size="sm"
+                  onClick={() => setShowEventDetails(false)}
+                >
+                  ✕
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Date</Label>
+                  <p className="text-sm">{formatDate(selectedEvent.date)}</p>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Time</Label>
+                  <p className="text-sm">{selectedEvent.time}</p>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Venue</Label>
+                  <p className="text-sm">{selectedEvent.venue}</p>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Organizer</Label>
+                  <p className="text-sm">{selectedEvent.organizer_name}</p>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Event Type</Label>
+                  <p className="text-sm">{selectedEvent.event_type}</p>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Participants</Label>
+                  <p className="text-sm">{selectedEvent.current_participants}/{selectedEvent.max_participants}</p>
+                </div>
+              </div>
+              
+              {selectedEvent.description && (
+                <div>
+                  <Label className="text-sm font-medium text-muted-foreground">Description</Label>
+                  <p className="text-sm mt-1">{selectedEvent.description}</p>
+                </div>
+              )}
+              
+              <div className="flex items-center space-x-2 pt-4">
+                <Badge className={getStatusColor(selectedEvent.status)}>
+                  {selectedEvent.status}
+                </Badge>
+                {selectedEvent.isMyEvent && (
+                  <Badge variant="secondary" className="bg-green-100 text-green-800">
+                    Your Event
+                  </Badge>
+                )}
+                {selectedEvent.isRegistered && (
+                  <Badge variant="secondary" className="bg-purple-100 text-purple-800">
+                    Registered
+                  </Badge>
+                )}
+              </div>
+              
+              <div className="flex justify-end space-x-2 pt-4 border-t">
+                <Button variant="outline" onClick={() => setShowEventDetails(false)}>
+                  Close
+                </Button>
+                {!selectedEvent.isRegistered ? (
+                  <Button
+                    onClick={() => {
+                      handleEventRegister(selectedEvent.id);
+                      setShowEventDetails(false);
+                    }}
+                    disabled={loading || selectedEvent.status === "completed" || selectedEvent.current_participants >= selectedEvent.max_participants}
+                  >
+                    {loading ? "Registering..." : "Register"}
+                  </Button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      handleEventRegister(selectedEvent.id);
+                      setShowEventDetails(false);
+                    }}
+                    disabled={loading}
+                  >
+                    {loading ? "Loading..." : "Unregister"}
+                  </Button>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default ParticipantDashboard;
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <Label htmlFor="event-name">• Event Name: *</Label>
+                              <Input
+                                id="event-name"
+                                value={officialEventRequest.eventName}
+                                onChange={(e) => setOfficialEventRequest({...officialEventRequest, eventName: e.target.value})}
+                                placeholder="Name of your event"
+                              />
+                            </div>
+                            <div>
+                              <Label htmlFor="purpose">• Purpose: *</Label>
+                              <Input
+                                id="purpose"
+                                value={officialEventRequest.purpose}
+                                onChange={(e) => setOfficialEventRequest({...officialEventRequest, purpose: e.target.value})}
+                                placeholder="Purpose of the event"
+                              />
+                            </div>
+                          </div>
+                          
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                              <Label htmlFor="participants">• Participants: *</Label>
+                              <Input
+                                id="participants"
+                                value={officialEventRequest.participants}
+                                onChange={(e) => setOfficialEventRequest({...officialEventRequest, participants: e.target.value})}
+                                placeholder="Number of participants"
+                              />
+                            </div>
+                            <div>
+                              <Label htmlFor="modality">• Modality: *</Label>
+                              <Select value={officialEventRequest.modality} onValueChange={(value) => setOfficialEventRequest({...officialEventRequest, modality: value})}>
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="Face-to-Face">Face-to-Face</SelectItem>
+                                  <SelectItem value="Online">Online</SelectItem>
+                                  <SelectItem value="Hybrid">Hybrid</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div>
+                              <Label htmlFor="overall-incharge">• Overall In-Charge:</Label>
+                              <Input
+                                id="overall-incharge"
+                                value={officialEventRequest.overallInCharge}
+                                onChange={(e) => setOfficialEventRequest({...officialEventRequest, overallInCharge: e.target.value})}
+                                placeholder="Person in charge"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                              <Label htmlFor="event-date">• Event Date: *</Label>
+                              <Input
+                                id="event-date"
+                                type="date"
+                                value={officialEventRequest.eventDate}
+                                onChange={(e) => setOfficialEventRequest({...officialEventRequest, eventDate: e.target.value})}
+                              />
+                            </div>
+                            <div>
+                              <Label htmlFor="event-time">• Time: *</Label>
+                              <Input
+                                id="event-time"
+                                type="time"
+                                value={officialEventRequest.eventTime}
+                                onChange={(e) => setOfficialEventRequest({...officialEventRequest, eventTime: e.target.value})}
+                              />
+                            </div>
+                            <div>
+                              <Label htmlFor="venue">• Venue: *</Label>
+                              <Input
+                                id="venue"
+                                value={officialEventRequest.venue}
+                                onChange={(e) => setOfficialEventRequest({...officialEventRequest, venue: e.target.value})}
+                                placeholder="Event venue/location"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* EVENT COMMITTEE ASSIGNMENTS Section */}
+                      <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                        <h3 className="text-lg font-semibold text-purple-800 mb-4">👥 EVENT COMMITTEE ASSIGNMENTS</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <Label htmlFor="invitation">1. Invitation:</Label>
+                            <Input
+                              id="invitation"
+                              value={officialEventRequest.invitation}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, invitation: e.target.value})}
+                              placeholder="Person assigned to invitations"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="program">2. Program:</Label>
+                            <Input
+                              id="program"
+                              value={officialEventRequest.program}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, program: e.target.value})}
+                              placeholder="Program coordinator"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="sound">3. Sound System:</Label>
+                            <Input
+                              id="sound"
+                              value={officialEventRequest.soundSystem}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, soundSystem: e.target.value})}
+                              placeholder="Sound system manager"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="decoration">4. Stage Decoration:</Label>
+                            <Input
+                              id="decoration"
+                              value={officialEventRequest.stageDecoration}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, stageDecoration: e.target.value})}
+                              placeholder="Decoration coordinator"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="cleanup">5. Demolition / Clean-Up:</Label>
+                            <Input
+                              id="cleanup"
+                              value={officialEventRequest.demolitionCleanup}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, demolitionCleanup: e.target.value})}
+                              placeholder="Clean-up coordinator"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="food">6. Food / Refreshments:</Label>
+                            <Input
+                              id="food"
+                              value={officialEventRequest.foodRefreshments}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, foodRefreshments: e.target.value})}
+                              placeholder="Food coordinator"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="security">7. Safety & Security / Usher:</Label>
+                            <Input
+                              id="security"
+                              value={officialEventRequest.safetySecurityUsher}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, safetySecurityUsher: e.target.value})}
+                              placeholder="Security coordinator"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="documentation">8. Documentation:</Label>
+                            <Input
+                              id="documentation"
+                              value={officialEventRequest.documentation}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, documentation: e.target.value})}
+                              placeholder="Documentation coordinator"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="registration">9. Registration:</Label>
+                            <Input
+                              id="registration"
+                              value={officialEventRequest.registration}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, registration: e.target.value})}
+                              placeholder="Registration coordinator"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="evaluation">10. Evaluation:</Label>
+                            <Input
+                              id="evaluation"
+                              value={officialEventRequest.evaluation}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, evaluation: e.target.value})}
+                              placeholder="Evaluation coordinator"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* PRE-EVENT REQUIREMENTS Section */}
+                      <div className="bg-orange-50 p-4 rounded-lg border border-orange-200">
+                        <h3 className="text-lg font-semibold text-orange-800 mb-4">📄 PRE-EVENT REQUIREMENTS (to be attached upon submission)</h3>
+                        <div className="space-y-3">
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="checkbox"
+                              id="letter-request"
+                              checked={officialEventRequest.letterOfRequest}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, letterOfRequest: e.target.checked})}
+                              className="rounded"
+                            />
+                            <Label htmlFor="letter-request">• Letter of Request (signed by Program Head or Dean)</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="checkbox"
+                              id="board-resolution"
+                              checked={officialEventRequest.studentBoardResolution}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, studentBoardResolution: e.target.checked})}
+                              className="rounded"
+                            />
+                            <Label htmlFor="board-resolution">• Student Board Resolution (if the event will be held outside the school or involves a proposal for collections)</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="checkbox"
+                              id="event-program"
+                              checked={officialEventRequest.eventProgramInvitation}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, eventProgramInvitation: e.target.checked})}
+                              className="rounded"
+                            />
+                            <Label htmlFor="event-program">• Event Program / Invitation</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="checkbox"
+                              id="permits-list"
+                              checked={officialEventRequest.listOfPermits}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, listOfPermits: e.target.checked})}
+                              className="rounded"
+                            />
+                            <Label htmlFor="permits-list">• List of Permits Needed (if applicable)</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="checkbox"
+                              id="certificate-copy"
+                              checked={officialEventRequest.copyOfCertificate}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, copyOfCertificate: e.target.checked})}
+                              className="rounded"
+                            />
+                            <Label htmlFor="certificate-copy">• Copy of Certificate (if applicable)</Label>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* POST-EVENT REQUIREMENTS Section */}
+                      <div className="bg-indigo-50 p-4 rounded-lg border border-indigo-200">
+                        <h3 className="text-lg font-semibold text-indigo-800 mb-4">📊 POST-EVENT REQUIREMENTS (to be submitted within 3-5 days after the event)</h3>
+                        <div className="space-y-3">
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="checkbox"
+                              id="post-event-result"
+                              checked={officialEventRequest.postEventResult}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, postEventResult: e.target.checked})}
+                              className="rounded"
+                            />
+                            <Label htmlFor="post-event-result">• Post-Event Result</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <input
+                              type="checkbox"
+                              id="accomplishment-report"
+                              checked={officialEventRequest.accomplishmentReport}
+                              onChange={(e) => setOfficialEventRequest({...officialEventRequest, accomplishmentReport: e.target.checked})}
+                              className="rounded"
+                            />
+                            <Label htmlFor="accomplishment-report">• Accomplishment / Narrative Report</Label>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* IMPORTANT REMINDERS Section */}
+                      <div className="bg-red-50 p-4 rounded-lg border border-red-200">
+                        <h3 className="text-lg font-semibold text-red-800 mb-4">⚠️ IMPORTANT REMINDERS:</h3>
+                        <div className="space-y-2 text-sm text-red-700">
+                          <p>• Requests must be submitted to the Office of the School Activities <strong>8 days or more before the event date</strong> to comply with the VPAA's 7-day requirement.</p>
+                          <p>• The Office of the School Activities is open <strong>Monday to Friday, 8:00 a.m. to 5:00 p.m. only</strong>.</p>
+                          <p>• Incomplete requirements will not be accepted.</p>
+                        </div>
+                      </div>
+
+                      {/* Action Buttons */}
+                      <div className="flex justify-end space-x-4 pt-4 border-t">
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            setShowNewRequestForm(false);
+                            // Reset form
+                            setOfficialEventRequest({
+                              eventRequestedBy: "",
+                              position: "",
+                              organization: "",
+                              contactNumber: "",
+                              email: "",
+                              dateOfSubmission: new Date().toISOString().split('T')[0],
+                              eventName: "",
+                              purpose: "",
+                              participants: "",
+                              modality: "Face-to-Face",
+                              eventDate: "",
+                              eventTime: "",
+                              venue: "",
+                              overallInCharge: "",
+                              invitation: "",
+                              program: "",
+                              soundSystem: "",
+                              stageDecoration: "",
+                              demolitionCleanup: "",
+                              foodRefreshments: "",
+                              safetySecurityUsher: "",
+                              documentation: "",
+                              registration: "",
+                              evaluation: "",
+                              letterOfRequest: false,
+                              studentBoardResolution: false,
+                              eventProgramInvitation: false,
+                              listOfPermits: false,
+                              copyOfCertificate: false,
+                              postEventResult: false,
+                              accomplishmentReport: false
+                            });
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          onClick={handleSubmitOfficialEventRequest}
+                          className="bg-primary hover:bg-primary/90"
+                          disabled={loading}
+                        >
+                          <Send className="w-4 h-4 mr-2" />
+                          {loading ? "Submitting..." : "Submit Request"}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+          </TabsContent>
+                <div className="space-y-4">
+                  <h3 className="font-medium">Your Event Requests</h3>
+                  {eventRequests.length === 0 ? (
+                    <Card className="p-6 text-center">
+                      <Plus className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+                      <p className="text-muted-foreground">No event requests submitted yet</p>
+                      <Button 
+                        variant="outline" 
+                        className="mt-4"
+                        onClick={() => setShowNewRequestForm(true)}
+                      >
+                        Submit Your First Request
+                      </Button>
+                    </Card>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {eventRequests.map((request) => (
+                        <Card key={request.id} className="overflow-hidden">
+                          <CardContent className="p-6">
+                            <div className="flex items-center justify-between mb-4">
+                              <h4 className="font-medium">{request.title}</h4>
+                              <Badge className={getStatusColor(request.status)}>
+                                {request.status}
+                              </Badge>
+                            </div>
+                            
+                            <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
+                              {request.description}
+                            </p>
+                            
+                            <div className="space-y-2 text-sm">
+                              <div className="flex items-center space-x-2">
+                                <Calendar className="w-4 h-4 text-muted-foreground" />
+                                <span>{formatDate(request.date)} at {request.time}</span>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <MapPin className="w-4 h-4 text-muted-foreground" />
+                                <span>{request.venue}</span>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <Badge variant="outline">{request.event_type}</Badge>
+                                <span className="text-xs">{request.expected_participants} participants</span>
+                              </div>
+                            </div>
+                            
+                            {request.admin_comments && (
+                              <div className="mt-4 p-3 bg-muted/50 rounded-lg">
+                                <p className="text-xs font-medium mb-1">Admin Comments:</p>
+                                <p className="text-xs">{request.admin_comments}</p>
+                              </div>
+                            )}
+                            
+                            {/* PDF Download for Approved Requests */}
+                            {request.status === 'approved' && (
+                              <div className="mt-4 pt-3 border-t">
+                                <Button
+                                  onClick={() => generatePDF(request)}
+                                  size="sm"
+                                  className="w-full bg-green-600 hover:bg-green-700 text-white"
+                                >
+                                  <Download className="w-4 h-4 mr-2" />
+                                  Download PDF
+                                </Button>
+                              </div>
+                            )}
+                            
+                            <div className="mt-4 text-xs text-muted-foreground">
+                              Submitted: {formatDate(request.created_at)}
+                            </div>
+                          </CardContent>
+          </TabsContent>
+
+          {/* Multimedia Tab */}
+          <TabsContent value="multimedia" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <CardTitle>Multimedia Gallery</CardTitle>
+                <CardDescription>View event photos, videos and multimedia content</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="text-center py-12">
+                  <Camera className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+                  <h3 className="text-lg font-medium mb-2 text-muted-foreground">Multimedia Gallery</h3>
+                  <p className="text-muted-foreground mb-4">
+                    This feature is under development. You'll be able to view and interact with event multimedia content here.
+                  </p>
+                  <Button variant="outline" disabled>
+                    Coming Soon
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Program Flow Tab */}
+          <TabsContent value="program" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <CardTitle>Program Flow</CardTitle>
+                <CardDescription>Event program flow management (Coming Soon)</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="text-center py-12">
+                  <Workflow className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+                  <h3 className="text-lg font-medium mb-2 text-muted-foreground">Program Flow Management</h3>
+                  <p className="text-muted-foreground mb-4">
+                    This feature is under development. You'll be able to manage and view event program flows here.
+                  </p>
+                  <Button variant="outline" disabled>
+                    Coming Soon
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Multimedia Tab */}
+          <TabsContent value="multimedia" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <CardTitle>Multimedia Gallery</CardTitle>
+                <CardDescription>View event photos, videos and multimedia content</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="text-center py-12">
+                  <Camera className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+                  <h3 className="text-lg font-medium mb-2 text-muted-foreground">Multimedia Gallery</h3>
+                  <p className="text-muted-foreground mb-4">
+                    This feature is under development. You'll be able to view event photos and videos here.
+                  </p>
+                  <Button variant="outline" disabled>
+                    Coming Soon
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Program Flow Tab */}
+          <TabsContent value="program" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <CardTitle>Program Flow Management</CardTitle>
+                <CardDescription>Event program flow management (Coming Soon)</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="text-center py-12">
+                  <Workflow className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
+                  <h3 className="text-lg font-medium mb-2 text-muted-foreground">Program Flow Management</h3>
+                  <p className="text-muted-foreground mb-4">
+                    This feature is under development. You'll be able to manage event program flows here.
+                  </p>
+                  <Button variant="outline" disabled>
+                    Coming Soon
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Notifications Tab */}
+          <TabsContent value="notifications" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Notifications</CardTitle>
+                    <CardDescription>Stay updated with event announcements and reminders</CardDescription>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Button variant="outline" size="sm" onClick={loadNotifications}>
+                      <Bell className="w-4 h-4 mr-2" />
+                      Refresh
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={handleMarkAllAsRead}
+                      disabled={unreadNotifications === 0}
+                    >
+                      Mark All as Read
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {notifications.length === 0 ? (
+                    <div className="text-center py-8">
+                      <Bell className="w-16 h-16 mx-auto mb-4 text-muted-foreground" />
+                      <h3 className="text-lg font-medium mb-2">No notifications yet</h3>
+                      <p className="text-muted-foreground">
+                        You'll see event updates and announcements here
+                      </p>
+                      <Button 
+                        variant="outline" 
+                        className="mt-4"
+                        onClick={loadNotifications}
+                      >
+                        <Bell className="w-4 h-4 mr-2" />
+                        Check for Updates
+                      </Button>
+                    </div>
+                  ) : (
+                    notifications.map((notification) => (
+                      <div
+                        key={notification.id}
+                        className={`p-4 border rounded-lg cursor-pointer transition-all hover:shadow-md relative ${
+                          notification.is_read 
+                            ? 'bg-background border-border hover:bg-muted/20' 
+                            : 'bg-primary/8 border-primary/30 shadow-md ring-1 ring-primary/20'
+                        }`}
+                        onClick={() => handleMarkAsRead(notification.id)}
+                      >
+                        <div className="flex items-start space-x-3">
+                          <div className={`p-2 rounded-full ${
+                            notification.is_read ? 'bg-muted/50' : 'bg-primary/20 ring-2 ring-primary/30'
+                          }`}>
+                            {getNotificationIcon(notification.type)}
+                          </div>
+                          <div className="flex-1">
+                            <div className="flex items-start justify-between mb-1">
+                              <h4 className={`font-medium leading-tight ${
+                                !notification.is_read ? 'text-primary font-semibold' : 'text-foreground'
+                              }`}>
+                                {notification.title}
+                              </h4>
+                              {!notification.is_read && (
+                                <div className="flex items-center space-x-1 ml-2">
+                                  <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+                                  <span className="text-xs font-medium text-red-600">NEW</span>
+                                </div>
+                              )}
+                            </div>
+                            <p className={`text-sm mb-2 ${
+                              !notification.is_read ? 'text-foreground' : 'text-muted-foreground'
+                            }`}>
+                              {notification.message}
+                            </p>
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs text-muted-foreground font-medium">
+                                {formatRelativeTime(notification.created_at)}
+                              </span>
+                              <span className="text-xs text-muted-foreground">
+                                {formatDateTime(notification.created_at)}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        {!notification.is_read && (
+                          <div className="absolute top-2 right-2">
+                            <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Reports Tab - Chat and Problem Reporting */}
+          <TabsContent value="reports" className="space-y-6">
+            <Card className="card-elevated">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Reports & Issues</CardTitle>
+                    <CardDescription>Report problems about event rejections or other issues</CardDescription>
+                  </div>
+                  <Button 
+                    className="gradient-primary"
+                    onClick={() => setShowNewReportForm(true)}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    New Report
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {/* New Report Form */}
+                {showNewReportForm && (
+                  <Card className="mb-6 border-2 border-primary/20">
+                    <CardHeader>
+                      <CardTitle className="text-lg">Submit New Report</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div>
+                        <Label htmlFor="report-type">Report Type</Label>
+                        <select
+                          id="report-type"
+                          value={newReportType}
+                          onChange={(e) => setNewReportType(e.target.value as any)}
+                          className="w-full mt-1 p-2 border rounded-md"
+                        >
+                          <option value="rejection_complaint">Event Rejection Complaint</option>
+                          <option value="technical_issue">Technical Issue</option>
+                          <option value="general_inquiry">General Inquiry</option>
+                          <option value="event_feedback">Event Feedback</option>
+                        </select>
+                      </div>
+                      
+                      <div>
+                        <Label htmlFor="report-title">Title</Label>
+                        <Input
+                          id="report-title"
+                          value={newReportTitle}
+                          onChange={(e) => setNewReportTitle(e.target.value)}
+                          placeholder="Brief description of the issue"
+                        />
+                      </div>
+                      
+                      <div>
+                        <Label htmlFor="report-description">Description</Label>
+                        <Textarea
+                          id="report-description"
+                          value={newReportDescription}
+                          onChange={(e) => setNewReportDescription(e.target.value)}
+                          placeholder="Provide detailed information about your issue or complaint"
+                          rows={4}
+                        />
+                      </div>
+                      
+                      <div className="flex items-center space-x-2">
+                        <Button onClick={handleCreateReport} disabled={loading}>
+                          <FileText className="w-4 h-4 mr-2" />
+                          Submit Report
+                        </Button>
+                        <Button 
+                          variant="outline" 
+                          onClick={() => {
+                            setShowNewReportForm(false);
+                            setNewReportTitle("");
+                            setNewReportDescription("");
+                          }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Reports List */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Reports Sidebar */}
+                  <div className="space-y-4">
+                    <h3 className="font-medium">Your Reports</h3>
+                    {reports.length === 0 ? (
+                      <Card className="p-6 text-center">
+                        <FileText className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+                        <p className="text-muted-foreground">No reports submitted yet</p>
+                        <Button 
+                          variant="outline" 
+                          className="mt-4"
+                          onClick={() => setShowNewReportForm(true)}
+                        >
+                          Submit Your First Report
+                        </Button>
+                      </Card>
+                    ) : (
+                      reports.map((report) => (
+                        <Card 
+                          key={report.id} 
+                          className={`cursor-pointer transition-colors hover:border-primary/50 ${
+                            selectedReport?.id === report.id ? 'border-primary bg-primary/5' : ''
+                          }`}
+                          onClick={() => {
+                            setSelectedReport(report);
+                            loadReportMessages(report.id);
+                          }}
+                        >
+                          <CardContent className="p-4">
+                            <div className="flex items-center justify-between mb-2">
+                              <h4 className="font-medium text-sm">{report.title}</h4>
+                              <Badge className={getStatusColor(report.status)}>
+                                {report.status}
+                              </Badge>
+                            </div>
+                            <p className="text-xs text-muted-foreground mb-2">
+                              {report.event_title && `Event: ${report.event_title}`}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {formatDate(report.created_at)}
+                            </p>
+                            <p className="text-sm mt-2 line-clamp-2">
+                              {report.description}
+                            </p>
+                          </CardContent>
+                        </Card>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Chat Interface */}
+                  <div>
+                    {selectedReport ? (
+                      <Card className="h-96 flex flex-col">
+                        <CardHeader className="pb-3">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <CardTitle className="text-lg">{selectedReport.title}</CardTitle>
+                              <CardDescription>
+                                {selectedReport.event_title && `Event: ${selectedReport.event_title}`}
+                              </CardDescription>
+                            </div>
+                            <Badge className={getStatusColor(selectedReport.status)}>
+                              {selectedReport.status}
+                            </Badge>
+                          </div>
+                        </CardHeader>
+                        
+                        {/* Messages */}
+                        <CardContent className="flex-1 overflow-y-auto space-y-3">
+                          {reportMessages.map((message) => (
+                            <div
+                              key={message.id}
+                              className={`flex ${
+                                message.sender_id === user?.id ? 'justify-end' : 'justify-start'
+                              }`}
+                            >
+                              <div
+                                className={`max-w-xs rounded-lg p-3 ${
+                                  message.sender_id === user?.id
+                                    ? 'bg-primary text-primary-foreground'
+                                    : 'bg-muted'
+                                }`}
+                              >
+                                <div className="flex items-center space-x-2 mb-1">
+                                  <span className="text-xs font-medium">
+                                    {message.sender_name}
+                                  </span>
+                                  <Badge variant="outline" className="text-xs">
+                                    {message.sender_role}
+                                  </Badge>
+                                </div>
+                                <p className="text-sm">{message.message}</p>
+                                <p className="text-xs opacity-70 mt-1">
+                                  {formatDateTime(message.created_at)}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                        </CardContent>
+                        
+                        {/* Message Input */}
+                        {selectedReport.status !== 'closed' && (
+                          <div className="p-4 border-t">
+                            <div className="flex items-center space-x-2 mb-2">
+                              <Button 
+                                variant="outline" 
+                                size="sm"
+                                onClick={() => {
+                                  loadReportMessages(selectedReport.id);
+                                  toast({
+                                    title: "Messages Refreshed",
+                                    description: "Checking for new admin replies..."
+                                  });
+                                }}
+                              >
+                                <Bell className="w-4 h-4 mr-2" />
+                                Refresh Messages
+                              </Button>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <Input
+                                value={newMessage}
+                                onChange={(e) => setNewMessage(e.target.value)}
+                                placeholder="Type your message..."
+                                onKeyPress={(e) => {
+                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleSendMessage();
+                                  }
+                                }}
+                              />
+                              <Button 
+                                onClick={handleSendMessage}
+                                disabled={!newMessage.trim() || loading}
+                                size="sm"
+                              >
+                                <Send className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                      </Card>
+                    ) : (
+                      <Card className="h-96 flex items-center justify-center">
+                        <div className="text-center">
+                          <FileText className="w-16 h-16 mx-auto mb-4 text-muted-foreground" />
+                          <h3 className="text-lg font-medium mb-2">Select a Report</h3>
+                          <p className="text-muted-foreground">
+                            Choose a report from the left to view the conversation
+                          </p>
+                        </div>
+                      </Card>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+        </main>
+      </div>
+      
+      {/* Event Details Modal */}
+      {showEventDetails && selectedEvent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold">{selectedEvent.title}</h2>
+                <Button
+                  variant="ghost"
+                  onClick={() => setShowEventDetails(false)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  ×
+                </Button>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="flex items-center space-x-2">
+                  <Badge className={getStatusColor(selectedEvent.status)}>
+                    {selectedEvent.status}
+                  </Badge>
+                  {selectedEvent.isMyEvent && (
+                    <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                      My Event
+                    </Badge>
+                  )}
+                  <Badge variant="outline">{selectedEvent.event_type}</Badge>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-3">
+                    <div className="flex items-center space-x-2">
+                      <Calendar className="w-5 h-5 text-muted-foreground" />
+                      <span className="font-medium">Date:</span>
+                      <span>{formatDate(selectedEvent.date)}</span>
+                    </div>
+                    
+                    <div className="flex items-center space-x-2">
+                      <Clock className="w-5 h-5 text-muted-foreground" />
+                      <span className="font-medium">Time:</span>
+                      <span>{selectedEvent.time}</span>
+                    </div>
+                    
+                    <div className="flex items-center space-x-2">
+                      <MapPin className="w-5 h-5 text-muted-foreground" />
+                      <span className="font-medium">Venue:</span>
+                      <span>{selectedEvent.venue}</span>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    <div className="flex items-center space-x-2">
+                      <User className="w-5 h-5 text-muted-foreground" />
+                      <span className="font-medium">Organizer:</span>
+                      <span>{selectedEvent.organizer_name}</span>
+                    </div>
+                    
+                    <div className="flex items-center space-x-2">
+                      <Users className="w-5 h-5 text-muted-foreground" />
+                      <span className="font-medium">Participants:</span>
+                      <span>{selectedEvent.current_participants}/{selectedEvent.max_participants}</span>
+                    </div>
+                    
+                    <div className="flex items-center space-x-2">
+                      <span className="font-medium">Registration:</span>
+                      {selectedEvent.isRegistered ? (
+                        <Badge className="bg-green-100 text-green-800">Registered</Badge>
+                      ) : (
+                        <Badge variant="outline">Not Registered</Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                
+                <div>
+                  <h3 className="font-medium mb-2">Description:</h3>
+                  <p className="text-muted-foreground bg-muted/50 p-4 rounded-lg">
+                    {selectedEvent.description || 'No description available.'}
+                  </p>
+                </div>
+                
+                <div className="flex items-center space-x-4 pt-4 border-t">
+                  {!selectedEvent.isMyEvent && (
+                    <>
+                      <Button
+                        variant={selectedEvent.isRegistered ? "secondary" : "default"}
+                        onClick={() => {
+                          handleEventRegister(selectedEvent.id);
+                          setShowEventDetails(false);
+                        }}
+                        disabled={loading || selectedEvent.current_participants >= selectedEvent.max_participants && !selectedEvent.isRegistered}
+                      >
+                        {selectedEvent.isRegistered ? "Unregister" : "Register"}
+                      </Button>
+                      
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          handleToggleFavorite(selectedEvent.id);
+                          setShowEventDetails(false);
+                        }}
+                      >
+                        <Heart className={`w-4 h-4 mr-2 ${selectedEvent.isFavorite ? 'fill-red-500 text-red-500' : ''}`} />
+                        {selectedEvent.isFavorite ? "Remove Favorite" : "Add to Favorites"}
+                      </Button>
+                    </>
+                  )}
+                  
+                  {selectedEvent.isMyEvent && (
+                    <div className="text-sm text-muted-foreground">
+                      This is your event. You are automatically registered as the organizer.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default ParticipantDashboard;
